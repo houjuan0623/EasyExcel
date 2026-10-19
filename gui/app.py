@@ -1,0 +1,3042 @@
+"""
+ExcelRouter - 图形界面
+
+三步式单窗口布局（面向非技术办公用户，按任务顺序组织界面）：
+  ① 选择要拆的表格：「选文件 / 选文件夹」两个直选按钮（类型由路径自动推断），
+     选完自动统计文件数、后台扫描字段、自动推荐输出目录；
+  ② 按哪个字段拆分：拆分字段下拉（扫描后按关键词智能预选）＋批量选项
+     （仅文件夹显示：每组 ZIP / 同时拆到人）；
+  ③ 开始拆分：输出目录＋主按钮＋进度＋状态行，固定在窗口底部随时可达。
+  「▸ 高级设置」折叠在步骤区末尾；「▸ 处理详情」日志默认收起，出错自动展开。
+
+拆分在子线程里跑，日志/进度经 queue 由主线程 UI 泵（_pump_ui，每 100ms 批量刷新）
+更新界面——子线程绝不直接碰 Tk 控件（v2.4 机制，勿回退）。
+
+Copyright (c) 2026 AbeLin
+MIT License
+"""
+
+import os
+import re
+import sys
+import json
+import queue
+import threading
+import webbrowser
+from typing import Any
+
+import customtkinter as ctk
+import tkinter as tk
+from tkinter import filedialog, messagebox
+
+from gui.platform_compat import (
+    lock_owner_name, open_folder, parse_drop_paths, pick_ui_font, set_window_icon,
+)
+
+# 拖拽支持（v2.7）：tkinterdnd2 为可选依赖——打包环境缺它时静默退回无拖拽，
+# 不影响其余任何功能。CTk + TkinterDnD 的混编写法是社区通行方案（本地 spike 验证过）。
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    _DND_OK = True
+except Exception:
+    TkinterDnD = None  # type: ignore[assignment]
+    DND_FILES = None   # type: ignore[assignment]
+    _DND_OK = False
+
+if _DND_OK:
+    class _RootBase(ctk.CTk, TkinterDnD.DnDWrapper):  # type: ignore[misc]
+        """customtkinter 根窗口 + tkdnd 拖放能力的混编基类。"""
+else:
+    _RootBase = ctk.CTk  # type: ignore[assignment]  # 缺依赖时退回纯 CTk
+
+
+# =====================================================
+# 路径解析（兼容 PyInstaller --onefile 打包）
+# =====================================================
+
+def _is_frozen():
+    return getattr(sys, 'frozen', False)
+
+
+def _resource_dir():
+    if _is_frozen():
+        return sys._MEIPASS   # type: ignore[attr-defined]  # PyInstaller 运行时注入
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _app_dir():
+    if _is_frozen():
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+DEFAULT_CONFIG_PATH = os.path.join(_resource_dir(), "config", "default_config.json")
+USER_CONFIG_PATH    = os.path.join(_app_dir(), "user_config.json")
+
+COL_PLACEHOLDER = "（选择表格后自动识别）"
+# 速度模式两档（v2.9）：文案里直接写清代价，用户不用点开帮助就能选
+SPEED_STD  = "标准（保留格式）"
+SPEED_FAST = "极速（纯数据）"
+PDF_COL_PLACEHOLDER = "（选清单后自动识别）"
+# 顶部模式切换：内部模式名 ↔ 按钮文字（ui_mode 存的是内部名；字典顺序 = 按钮顺序）。
+# 「collect」对外叫「Excel 汇总」：默认是普通的合并汇总，查收（谁没交、谁漏填）是 ② 里的可选开关
+# 「pdf」对外叫「文件加密分发」（v2.10 起也收 Word / Excel / PPT，内部名不改，ui_mode 已存进用户配置）
+MODE_LABELS = {"excel": "Excel 拆分", "collect": "Excel 汇总", "pdf": "文件加密分发"}
+COL_IN_TIP = "把要合并的表放进一个文件夹再选它；选一个文件时，把它的各个 sheet 合成一张"
+EXPECT_TIP = "名字用顿号或逗号隔开，也可以点「从表格读」；留空时用下发记录，或文件夹里名为「应交名单」的表"
+# 文件加密分发能收的文件（与 core.pdf_dist.SUPPORTED_EXTS 一致；GUI 不在启动时 import core）
+DIST_EXTS = (".pdf", ".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm")
+
+# UI 泵用的「本轮没有此类消息」哨兵（不能用 None：扫描失败时 payload 可能为空）
+_MISSING = object()
+
+APP_VERSION = "3.0.0"
+# 匿名反馈问卷地址（问卷 URL 确定后替换此处即可，一行改动 + 打 tag 发版）
+FEEDBACK_URL = "https://f.wps.cn/g/pBOAWUQc/"
+# 在线 FAQ（「❓ 常见问题」按钮）：链接 Gitee 镜像而非 GitHub——国内办公网络访问
+# GitHub 不稳定，用户点帮助按钮却打不开比没有按钮更糟。内容与 GitHub 同步发版。
+FAQ_URL = "https://gitee.com/Marsandsea/Excelrouter/blob/main/docs/FAQ.md"
+
+# 状态文字颜色（浅色模式, 深色模式）
+C_OK    = ("#15803d", "#4ade80")
+C_WARN  = ("#b45309", "#fbbf24")
+C_ERR   = ("#b91c1c", "#f87171")
+C_MUTED = ("gray40", "gray60")
+
+# ── 品牌调色板（v2.7.1，浅色/深色双主题集中取值）──────────────
+# 主色「移动蓝」：使用者是移动系办公人群，品牌联想自然；比 ctk 默认 blue
+# (#3B8ED0) 更饱和明亮，主按钮/徽章/进度条统一从这套取色，形成记忆点。
+# 完成态用明确的浅绿横幅承载——「显眼」最重要的时刻是完成瞬间。
+PRIMARY        = ("#0E7FD1", "#38BDF8")   # 主按钮、步骤徽章、进度条、分段选择高亮
+PRIMARY_HOVER  = ("#0B6BB0", "#7DD3FC")
+OK_BANNER_BG   = ("#DCFCE7", "#14532D")   # 完成摘要横幅底色（文字仍用 C_OK）
+CARD_BORDER    = ("gray82", "gray28")     # 步骤卡片 1px 淡边框
+# ACCENT 保留为 PRIMARY 的别名：徽章等既有引用不逐处改动，取色来源已经换血
+ACCENT  = PRIMARY
+
+def _init_fonts():
+    """把 CTk 默认字体族设为一款中文字体（tk 默认 Roboto 回退的中文渲染很差）。
+
+    CTkFont 未显式传 family 时取 ThemeManager.theme["CTkFont"]["family"]，这是
+    唯一真正的全局默认入口（实测改 FontManager._default_font 无效）。主题 dict 是
+    set_default_color_theme 时载入的运行时副本，改它对已建/将建组件一致生效。
+
+    ★ 调用时机：必须在 root 建立后（tkfont.families() 需要 root）、任何组件创建前
+      （组件的 CTkFont 在构造时读主题值，晚了改无效）。
+
+    候选顺序见 platform_compat._UI_FONT_PREFS：雅黑排第一，Windows 行为不变；
+    麒麟 / UOS 上落到 Noto Sans CJK SC、文泉驿或方正字库。一个都没有就不动主题，
+    交给 tk 自己的字体回退。**不要改 ["CTkFont"]["size"]** —— 页脚已有「大字号」
+    开关，动默认字号会静默重排每个老用户的窗口。
+    """
+    try:
+        import tkinter.font as tkfont
+        fam = pick_ui_font(tkfont.families())
+        if fam:
+            ctk.ThemeManager.theme["CTkFont"]["family"] = fam
+    except Exception:
+        pass
+
+def _ghost_button(parent, **kw):
+    """描边次要按钮：比主按钮弱一级的操作（浏览 / 扫描字段 / 打开文件夹等）。"""
+    return ctk.CTkButton(parent, fg_color="transparent", border_width=1,
+                         border_color=("gray60", "gray40"),
+                         text_color=("gray15", "gray85"),
+                         hover_color=("gray90", "gray25"), **kw)
+
+
+def _flat_button(parent, **kw):
+    """纯文字按钮：折叠开关、页脚工具位等最低视觉权重的操作。"""
+    return ctk.CTkButton(parent, fg_color="transparent",
+                         text_color=("gray20", "gray80"),
+                         hover_color=("gray85", "gray25"), **kw)
+
+# 兜底默认配置（通用、不绑定任何业务）
+FALLBACK_CONFIG = {
+    "input_path": "", "output_path": "",
+    "header_mode": "auto", "header_row": 1,
+    "grid_keys": [], "id_keys": [],
+    "split_column": "", "selected_values": [],
+    "person_column": "", "to_person": False, "person_file_filter": [],
+    "value_alias_map": {},
+    "skip_values": ["合计", "小计", "总计", "平均", ""],
+    "merge_across_files": False,
+    "make_zip": True,
+    "exact_match": True,
+    "preserve_format": True,
+    "keep_formulas": False,
+    "keep_hidden": False,          # v3.0：隐藏的 sheet 和列也照样发出（默认不发 sheet、清空列）
+    "auto_open_output": True,
+    # ── 文件加密分发（v2.6 起 PDF，v2.10 起也收 Word/Excel/PPT；键名沿用 pdf_*）──
+    "ui_mode": "excel",
+    "pdf_input_paths": [],
+    "pdf_mapping_path": "",
+    "pdf_grid_column": "",
+    "pdf_password_column": "",
+    "pdf_receiver_column": "",
+    "pdf_encrypt": True,
+    "pdf_watermark": True,
+    "pdf_watermark_text": "{grid} {date}",
+    "pdf_watermark_opacity": 0.15,
+    "pdf_watermark_angle": 45,
+    # ── Excel 汇总（v2.10）：名单 / 必填列 / 标题等都是文字，core.collect.split_names 负责拆 ──
+    "collect_input_path": "",
+    "collect_check": False,    # ② 的开关：True = 先查收（谁没交、谁漏填）再汇总；False = 普通汇总
+    "collect_expect": "",
+    "collect_required": "",
+    "collect_by": "",
+    "collect_title": "",
+    "collect_due": "",
+    "collect_record": "",
+    "fill_columns": "",       # 拆分时让对方填写的列（选填）：标黄、其余列锁定、写下发记录
+    "due": "",
+    # ── 方案（v3.0）：最近打开 / 存过的方案文件路径，跑完后「存成方案」的提示点过不再提示 ──
+    "recent_recipes": [],
+    "recipe_tip_off": False,
+    # ── 界面个性化（v2.7）──
+    "window_geometry": "",     # 上次关闭时的窗口大小位置；空 = 按屏幕自适应
+    "ui_scale": 100,           # 界面缩放百分比（大字号=115），重启后生效
+    # ── 界面个性化（v2.7.1）──
+    "appearance_mode": "system",   # system / light / dark，页脚按钮循环切换
+}
+
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("blue")
+
+
+def load_config():
+    for path in (USER_CONFIG_PATH, DEFAULT_CONFIG_PATH):
+        if os.path.exists(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    cfg = json.load(f)
+                merged = dict(FALLBACK_CONFIG)
+                merged.update(cfg)
+                return merged
+            except Exception:
+                continue
+    return dict(FALLBACK_CONFIG)
+
+
+def save_config(cfg):
+    with open(USER_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+class App(_RootBase):
+    def __init__(self):
+        super().__init__()
+        # 字体统一必须在任何组件创建前、root 建立后执行：
+        # tkfont.families() 需要 root；而组件的 CTkFont 在构造时读主题值，晚了改无效。
+        _init_fonts()
+        # 启动期（_build_ui 之前）产生的日志先攒着，_log_box 建好后统一排空
+        self._pending_logs = []
+        # _DND_OK = tkinterdnd2 这个 Python 包 import 成功；
+        # self._dnd_ok = 它的原生 tkdnd 库真的加载成功。两者必须分开：
+        # 麒麟等国产化 Linux 上 .so 的 glibc/libX11 ABI 常对不上，_require() 会抛
+        # RuntimeError，没有 try 包住时会直接把 __init__ 打穿、进程退出。
+        # 拖拽只是锦上添花，绝不能让它拦住整个程序启动。
+        self._dnd_ok = False
+        if _DND_OK:
+            try:
+                # 加载 tkdnd 二进制（守卫条件已保证 TkinterDnD 非 None）
+                self.TkdndVersion = TkinterDnD._require(self)  # type: ignore[union-attr]
+                self._dnd_ok = True
+            except Exception as e:
+                self.TkdndVersion = None
+                self._pending_logs.append(
+                    f"ℹ 拖拽功能不可用（{e}），不影响使用，请点「选文件 / 选文件夹」按钮。")
+        # 窗口标题只放简名：完整品牌名+副标已经在正文首行显示一次，
+        # 标题栏再写一遍会让人觉得“这句话重复了”。
+        self.title(f"ExcelRouter v{APP_VERSION}")
+        self._set_window_icon()
+        self._stop_flag = False
+        self._running = False
+        self.cfg = load_config()
+        self._init_geometry()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._first_run = not os.path.exists(USER_CONFIG_PATH) and not self.cfg.get("input_path")
+        # 界面缩放（大字号）：启动时应用；运行时切换只存配置、下次启动生效
+        scale = self.cfg.get("ui_scale", 100)
+        if isinstance(scale, int) and scale != 100:
+            ctk.set_widget_scaling(scale / 100)
+        # 深浅色（v2.7.1）：支持手动固定，不再只能跟随系统
+        mode = self.cfg.get("appearance_mode", "system")
+        if mode in ("light", "dark"):
+            ctk.set_appearance_mode(mode)
+        self._mode = self.cfg.get("ui_mode", "excel")   # "excel" / "pdf" / "collect"
+        if self._mode not in MODE_LABELS:
+            self._mode = "excel"
+        self._col_scanned = None      # Excel 汇总：最近清点过的输入（防重复 / 过期结果）
+        self._col_info: dict[str, Any] = {}   # 最近一次清点的结果（① 状态行、② 名单提示用）
+        self._col_notice = ""         # 结果卡片里的文字（查收通报 / 汇总说明，「复制」用）
+        self._col_progress = ""       # 最近一次查收的进度表路径
+        self._col_merged = ""         # 最近一次汇总表路径（「打开汇总表」用）
+        self._pdf_paths = [p for p in self.cfg.get("pdf_input_paths", []) if os.path.exists(p)]
+        self._scanned_map_path = None   # 最近扫描过的映射清单路径（防过期结果）
+        self._columns = []
+        self._adv_open = False
+        self._log_open = False
+        self._scanned_path = None     # 最近一次扫描的输入路径（防重复扫描/过期结果）
+        self._out_auto = ""           # 最近一次自动推荐的输出目录（用户没改过才允许覆盖）
+        self._last_output = None      # 最近一次成功运行的输出目录（「打开输出文件夹」用）
+        self._tpl_path = None         # 最近一次扫描识别出的模板文件全路径（取值枚举用）
+        self._values_all = []         # 当前拆分字段枚举到的全部取值
+        self._value_vars = {}         # 取值 -> BooleanVar（勾选结果写回 selected_values）
+        self._values_open = False     # 取值勾选面板展开状态
+        self._values_panel = None     # 展开中的勾选面板
+        self._enum_token = 0          # 取值枚举序号：防止过期结果回填
+        self._enum_after = None       # 防抖 after id
+        # 取值枚举的「作用域」（v2.9）：_tpl_path 只是批量里的一个样本文件，
+        # 它枚举出的取值天然可能不全，而拆分是对全部文件生效的。这几个状态
+        # 就是为了让界面能说清「这 N 组是哪来的」，不再把抽样结果当全量结论。
+        self._scan_n = 0              # 最近一次扫描到的 Excel 文件数
+        self._scan_bytes = 0          # 同上，总字节（换样本文件时沿用）
+        self._scan_is_dir = False     # 同上，输入是否为文件夹
+        self._tpl_is_sample = False   # _tpl_path 只是多个文件里的一个
+        self._values_scope = "sample"  # 取值来源：sample / all（已全量扫描）
+        self._scan_all_token = 0      # 全量取值扫描序号：防过期结果回填
+        self._scanning_all = False    # 全量取值扫描进行中
+        self._tpl_kinds = (0, 0)      # 全量扫描看出的 (几种模板, 几个表)；不止一种时取值摘要里提一句
+        self._bulk_sync = False       # 全选/清空批量改勾选：合并成一次同步
+        # 「已限定名单」是一个**显式状态**，不能靠「是否全勾」反推：样本表里恰好
+        # 就是用户要的那几组时，全勾既可能是「不筛选」也可能是「只要这几组」。
+        # 早先靠勾选数反推，用户点完「只拆这 N 组」再随手取消一个又勾回来，
+        # 名单就被悄悄清空、退回拆全部——正是这次要修的名实不符。**别改回反推。**
+        self._values_locked = False
+        self._lock_btn = None
+        self._recipe_active = None     # 套用过的方案：方案里的字段在表里找不到时只提醒，不自动换成推荐列         # 勾选面板里的「只拆这 N 组」按钮（面板开着才有）
+        self._values_hint = None      # 勾选面板里的提示文字（随锁定/抽样状态变）
+        self._warn_count = 0          # 本轮运行日志里 ⚠ 行数（完成后给「处理详情」打角标）
+        self._last_summary = None     # core 收尾的 [SUMMARY] JSON（完成摘要用）
+        self._pdf_grid_rows = 0       # 映射清单网格行数（分发预览用）
+        self._pdf_n_cols = 0          # 映射清单列数（分发预览用）
+        self._ui_q = queue.Queue()            # 子线程 → 主线程的消息队列
+        self._prog_indeterminate = False      # 进度条当前是否处于不定态动画
+        self._build_ui()
+        self._update_input_ui()
+        self._apply_mode()
+        p = self.cfg.get("input_path", "")
+        saved_out = self._output_var.get().strip()
+        if not saved_out:
+            self._suggest_output()
+        elif saved_out and os.path.normcase(saved_out) == os.path.normcase(self._auto_output_for(p) or ""):
+            self._out_auto = saved_out    # 上次存的就是自动值：换输入时允许跟着更新
+        if p and os.path.exists(p):
+            self._scan_input()        # 上次的输入还在：启动即自动扫描，打开就能直接开始
+        mp = self.cfg.get("pdf_mapping_path", "")
+        if mp and os.path.exists(mp):
+            self._scan_mapping()      # 上次的映射清单还在：同样启动即恢复列下拉
+        if self._first_run and not p:
+            # 首启一句话引导（D3）：三步卡片本身就是向导，不再做独立新手页
+            tip = "点「📄 选一个 Excel 文件」"
+            if self._dnd_ok:
+                tip += "，或直接把文件 / 文件夹拖进窗口"
+            self._set_in_status(f"第一次用？{tip}即可开始", C_MUTED)
+        for _m in self._pending_logs:      # 排空启动期攒下的日志（此时 _log_box 已就绪）
+            self._log(_m)
+        self._pending_logs = []
+        self.after(100, self._pump_ui)
+
+    def _init_geometry(self):
+        """窗口初始尺寸：优先恢复上次关闭时的大小位置；首次按屏幕高度自适应。
+
+        目标用户大量使用 1366×768 的老笔记本，固定 820×800 会让窗口下沿
+        （含主按钮的操作区）超出屏幕——这是小屏适配的实际 bug，高度必须
+        按可用屏高压下来（滚动区会负责吸收内容）。
+        """
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        h = min(800, max(600, sh - 90))
+        default = f"820x{h}"
+        saved = str(self.cfg.get("window_geometry", ""))
+        m = re.fullmatch(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", saved)
+        if m and int(m.group(1)) <= sw and int(m.group(2)) <= sh:
+            self.geometry(saved)
+        else:
+            self.geometry(default)
+        self.minsize(720, min(640, h))
+
+    def _on_close(self):
+        """关闭时静默记住窗口大小位置（下次启动恢复现场），失败不影响退出。"""
+        try:
+            cfg = self._collect_config()
+            cfg["window_geometry"] = self.geometry()
+            cfg["ui_scale"] = self.cfg.get("ui_scale", 100)
+            save_config(cfg)
+        except Exception:
+            pass
+        self.destroy()
+
+    def _set_window_icon(self):
+        """设置标题栏 / 任务栏 / 最小化时的窗口图标。
+
+        `--icon app.ico`（build.bat / CI）只改 exe 文件本身的图标，运行起来的
+        Tk 窗口图标要靠 iconbitmap() 单独设置，否则标题栏/任务栏还是 Tk 默认
+        羽毛图标——这就是“exe 图标换了，但程序里和最小化时的图标没跟着换”的
+        原因。app.ico 需要被 --add-data 打包进去才能在冻结后找到（见 build.bat）。
+
+        Linux（X11）上 iconbitmap() 只认 XBM 位图，传 .ico 必抛 TclError，
+        所以还要用 app.png + iconphoto 兜底（同样需要 --add-data 打包进去）。
+        """
+        bases = (_resource_dir(), _app_dir())
+        set_window_icon(self,
+                        [os.path.join(b, "app.ico") for b in bases],
+                        [os.path.join(b, "app.png") for b in bases])
+
+    # ── UI 构建 ──────────────────────────────────────────
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        self._build_header()                                   # row 0 品牌区（含模式切换）
+        self._body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self._body.grid(row=1, column=0, padx=12, pady=(4, 0), sticky="nsew")
+        self._body.grid_columnconfigure(0, weight=1)
+        # 两个模式各占一个 Frame（同一格），切换时 grid()/grid_remove()
+        self._excel_frame = ctk.CTkFrame(self._body, fg_color="transparent")
+        self._excel_frame.grid(row=0, column=0, sticky="ew")
+        self._excel_frame.grid_columnconfigure(0, weight=1)
+        self._pdf_frame = ctk.CTkFrame(self._body, fg_color="transparent")
+        self._pdf_frame.grid(row=0, column=0, sticky="ew")
+        self._pdf_frame.grid_columnconfigure(0, weight=1)
+        self._collect_frame = ctk.CTkFrame(self._body, fg_color="transparent")
+        self._collect_frame.grid(row=0, column=0, sticky="ew")
+        self._collect_frame.grid_columnconfigure(0, weight=1)
+        self._build_step_input(self._excel_frame)              # ① 选表格
+        self._build_step_field(self._excel_frame)              # ② 选字段（含批量选项）
+        self._build_adv_area(self._excel_frame)                # ▸ 高级设置
+        self._build_pdf_step_input(self._pdf_frame)            # PDF ① 选 PDF
+        self._build_pdf_step_map(self._pdf_frame)              # PDF ② 选映射清单
+        self._build_collect_steps(self._collect_frame)         # 汇总 ①② + 结果卡片
+        self._build_action(self)                               # row 2 ③ 开始（固定底部）
+        self._build_bottom(self)                               # row 3-5 工具条 / 日志 / 页脚
+
+    def _build_header(self):
+        # 品牌文案已定稿（副标/标语/特性行），只调整排版：作者信息移到页脚
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, padx=20, pady=(14, 4), sticky="ew")
+        brand = ctk.CTkFrame(head, fg_color="transparent")
+        brand.pack(anchor="w")
+        # 品牌色块（v2.7.1）：标题左侧的圆角主色标记，最轻量的品牌记忆点
+        ctk.CTkFrame(brand, width=6, height=30, corner_radius=3,
+                     fg_color=PRIMARY).pack(side="left", padx=(0, 10), pady=(2, 0))
+        ctk.CTkLabel(brand, text="ExcelRouter",
+                     font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
+        ctk.CTkLabel(brand, text="Excel 智能拆分汇总工具",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=("gray25", "gray75")).pack(side="left", padx=(10, 0), pady=(7, 0))
+        ctk.CTkLabel(head, text="一键按部门、网格、工号拆分并打包分发；收回来一键汇总，还能查出谁没交、谁漏填",
+                     font=ctk.CTkFont(size=12),
+                     text_color=("gray30", "gray70")).pack(anchor="w", pady=(4, 0))
+        ctk.CTkLabel(head, text="保留原格式 · 多表合并汇总 · 查收通报 · 文件加密分发",
+                     font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w", pady=(1, 0))
+        # 功能模式切换：Excel 拆分（默认） / Excel 汇总（可选先查收） / 文件按网格加密分发
+        self._mode_seg = ctk.CTkSegmentedButton(head, values=list(MODE_LABELS.values()),
+                                                command=self._on_mode_change,
+                                                selected_color=PRIMARY,
+                                                selected_hover_color=PRIMARY_HOVER,
+                                                height=30, font=ctk.CTkFont(size=12))
+        self._mode_seg.set(MODE_LABELS[self._mode])
+        self._mode_seg.pack(anchor="w", pady=(8, 0))
+
+    def _step_card(self, parent, row, num, title, padx=8, pady=(0, 10)):
+        """带编号徽章的步骤卡片：编号即真实操作顺序，是界面的导航主线。
+
+        返回 (card, 标题 Label)：标题引用给需要随模式改文案的卡片用（如③操作卡）。
+        """
+        card = ctk.CTkFrame(parent, corner_radius=12, border_width=1,
+                            border_color=CARD_BORDER)
+        card.grid(row=row, column=0, padx=padx, pady=pady, sticky="ew")
+        card.grid_columnconfigure(0, weight=1)
+        bar = ctk.CTkFrame(card, fg_color="transparent")
+        bar.grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+        ctk.CTkLabel(bar, text=str(num), width=26, height=26, corner_radius=13,
+                     fg_color=PRIMARY, text_color="white",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(side="left")
+        title_lbl = ctk.CTkLabel(bar, text=title,
+                                 font=ctk.CTkFont(size=14, weight="bold"))
+        title_lbl.pack(side="left", padx=(8, 0))
+        return card, title_lbl
+
+    def _build_step_input(self, parent):
+        card, _ = self._step_card(parent, 0, 1, "选择要拆的表格")
+
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.grid(row=1, column=0, padx=12, pady=(6, 2), sticky="w")
+        ctk.CTkButton(btns, text="📄 选一个 Excel 文件", width=170,
+                      command=self._pick_file).pack(side="left")
+        ctk.CTkButton(btns, text="📁 选整个文件夹（批量拆）", width=190,
+                      command=self._pick_folder).pack(side="left", padx=(10, 0))
+
+        self._input_var = ctk.StringVar(value=self.cfg.get("input_path", ""))
+        entry = ctk.CTkEntry(card, textvariable=self._input_var)
+        entry.grid(row=2, column=0, padx=12, pady=(6, 2), sticky="ew")
+        entry.bind("<Return>",   lambda e: self._on_path_edited())
+        entry.bind("<FocusOut>", lambda e: self._on_path_edited())
+        # 拖拽：整个卡片和路径框都接收拖入的文件/文件夹
+        self._enable_drop(card, self._on_drop_input)
+        self._enable_drop(entry, self._on_drop_input)
+
+        self._in_status = ctk.CTkLabel(card, text=self._idle_input_text(),
+                                       font=ctk.CTkFont(size=11), text_color=C_MUTED,
+                                       anchor="w", justify="left")
+        self._in_status.grid(row=3, column=0, padx=12, pady=(0, 10), sticky="w")
+
+    def _build_step_field(self, parent):
+        card, _ = self._step_card(parent, 1, 2, "按哪个字段拆分")
+        self._field_card = card   # 取值勾选面板的挂载点
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.grid(row=1, column=0, padx=12, pady=(6, 2), sticky="w")
+        ctk.CTkLabel(row, text="拆分字段").pack(side="left")
+        self._split_var = ctk.StringVar(value=self.cfg.get("split_column") or COL_PLACEHOLDER)
+        self._split_menu = ctk.CTkOptionMenu(row, variable=self._split_var,
+                                             values=[self._split_var.get()], width=220,
+                                             command=self._on_split_col_change)
+        self._split_menu.pack(side="left", padx=(8, 8))
+        _ghost_button(row, text="🔄 重新识别", width=104,
+                      command=self._scan_input).pack(side="left")
+        # 自动挑的样本是文件夹里排序最靠前的那个表，它未必有代表性（表头写法不同、
+        # 取值只覆盖一部分）。用户比程序更清楚哪张表是标准模板，给个入口自己指。
+        self._tpl_btn = _ghost_button(row, text="📄 换样本表", width=104,
+                                      command=self._pick_template)
+        self._tpl_btn.pack(side="left", padx=(6, 0))
+        self._tpl_btn.pack_forget()      # 仅批量（文件夹、多于 1 个表）时才有意义
+
+        ctk.CTkLabel(card, text="拆分字段的每个取值各生成一个文件：比如按「部门」拆 → 销售部.xlsx、财务部.xlsx…",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).grid(
+            row=2, column=0, padx=12, pady=(2, 0), sticky="w")
+        self._status = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+                                    text_color=C_MUTED, anchor="w")
+        self._status.grid(row=3, column=0, padx=12, pady=(0, 6), sticky="w")
+
+        # 取值预览（v2.7）：选定拆分字段后自动枚举该列取值——点开始之前就能看到
+        # 「将拆成哪几组」，并可展开勾选只拆其中一部分（替代高级设置里手填文本的主路径）
+        vrow = ctk.CTkFrame(card, fg_color="transparent")
+        vrow.grid(row=4, column=0, padx=12, pady=(0, 4), sticky="ew")
+        # 摘要文案与按钮**分两行**：抽样提示那句话很长，和按钮挤在同一行时
+        # 「扫描全部文件的分组」会被推出卡片右边缘（截图目检发现）。
+        self._values_status = ctk.CTkLabel(vrow, text="选定拆分字段后，这里会列出将拆出的分组",
+                                           font=ctk.CTkFont(size=11), text_color=C_MUTED,
+                                           anchor="w", justify="left", wraplength=600)
+        self._values_status.pack(anchor="w", fill="x")
+        vbtns = ctk.CTkFrame(vrow, fg_color="transparent")
+        vbtns.pack(anchor="w", pady=(2, 0))
+        self._scanall_btn = _flat_button(vbtns, text="🔍 扫描全部文件的分组", width=170,
+                                         command=self._scan_all_values)
+        self._values_btn = _flat_button(vbtns, text="▸ 查看/勾选分组", width=110,
+                                        command=self._toggle_values)
+        # 两个按钮都由 _refresh_values_ui 按状态 pack/forget（pack 顺序即左右顺序）
+        self._scanall_btn.pack_forget()
+        self._values_btn.pack_forget()   # 两者都由 _refresh_values_ui 按状态显隐
+        # 展开中的勾选面板 grid 到 row=5（_toggle_values 控制）
+
+        self._batch_frame = self._build_batch(card)
+        self._batch_frame.grid(row=6, column=0, padx=12, pady=(2, 12), sticky="ew")
+        self._batch_frame.grid_remove()   # 仅输入为文件夹时显示（_update_input_ui 控制）
+
+        # 让对方填写的列（v2.10，选填）：拆出去的是「待填写的表」，收回来用「Excel 汇总」查收
+        frow = ctk.CTkFrame(card, fg_color="transparent")
+        frow.grid(row=7, column=0, padx=12, pady=(0, 12), sticky="ew")
+        ctk.CTkLabel(frow, text="让对方填写的列（选填）").pack(side="left")
+        self._fill_var = ctk.StringVar(value=str(self.cfg.get("fill_columns", "") or ""))
+        ctk.CTkEntry(frow, textvariable=self._fill_var, width=300,
+                     placeholder_text="如 走访日期（日期）、走访结果（已走访/未走访）").pack(side="left", padx=(8, 12))
+        ctk.CTkLabel(frow, text="截止时间").pack(side="left")
+        self._due_var = ctk.StringVar(value=str(self.cfg.get("due", "") or ""))
+        ctk.CTkEntry(frow, textvariable=self._due_var, width=130,
+                     placeholder_text="如 10月15日 18:00").pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(card, text="填了的话：这几列标浅黄可编辑、其余列锁定，并生成下发记录和发送清单；"
+                                "收回来后切到「Excel 汇总」一键查谁没交、谁漏填。括号里可写要求："
+                                "（日期）（数字）（整数）（手机号）（电话）（选填），或用 / 隔开的选项做成下拉框，"
+                                "填错的收回来也查得出",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w", justify="left",
+                     wraplength=640).grid(row=8, column=0, padx=12, pady=(0, 10), sticky="w")
+
+    def _build_batch(self, parent):
+        f = ctk.CTkFrame(parent)
+        f.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(f, text="批量选项（拆整个文件夹时）",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=("gray25", "gray75")).grid(row=0, column=0, padx=12, pady=(8, 0), sticky="w")
+
+        self._zip_var = ctk.BooleanVar(value=self.cfg.get("make_zip", True))
+        ctk.CTkCheckBox(f, text="每个分组打包成 ZIP（方便整体转发）",
+                        variable=self._zip_var).grid(row=1, column=0, padx=12, pady=(8, 4), sticky="w")
+
+        self._person_var = ctk.BooleanVar(value=self.cfg.get("to_person", False))
+        ctk.CTkCheckBox(f, text="同时拆到人（每人再单独生成一个文件）",
+                        variable=self._person_var,
+                        command=self._update_person_state).grid(row=2, column=0, padx=12, pady=4, sticky="w")
+
+        prow = ctk.CTkFrame(f, fg_color="transparent")
+        prow.grid(row=3, column=0, padx=(38, 12), pady=(0, 2), sticky="w")
+        ctk.CTkLabel(prow, text="按哪个字段区分人").pack(side="left")
+        self._pcol_var = ctk.StringVar(value=self.cfg.get("person_column") or COL_PLACEHOLDER)
+        self._pcol_menu = ctk.CTkOptionMenu(prow, variable=self._pcol_var,
+                                            values=[self._pcol_var.get()], width=150)
+        self._pcol_menu.pack(side="left", padx=(6, 10))
+        ctk.CTkLabel(prow, text="只处理文件名含").pack(side="left")
+        self._pfilter_var = ctk.StringVar(value=", ".join(self.cfg.get("person_file_filter", [])))
+        self._pfilter_entry = ctk.CTkEntry(prow, textvariable=self._pfilter_var, width=150,
+                                           placeholder_text="如 工资,费用")
+        self._pfilter_entry.pack(side="left", padx=6)
+        ctk.CTkLabel(prow, text="的表（留空＝全部）").pack(side="left")
+
+        ctk.CTkLabel(f, text="「到人」只对上面指定的表生效，其余文件只进汇总。",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).grid(
+            row=4, column=0, padx=(38, 12), pady=(0, 8), sticky="w")
+        self._update_person_state()
+        return f
+
+    def _update_person_state(self):
+        """「同时拆到人」未勾选时置灰它的子选项，减少一次性摆在面前的决策数。"""
+        state = "normal" if self._person_var.get() else "disabled"
+        self._pcol_menu.configure(state=state)
+        self._pfilter_entry.configure(state=state)
+
+    # ── 拖拽（v2.7，tkinterdnd2 可选依赖）────────────────────
+    def _enable_drop(self, widget, handler):
+        """给控件注册文件拖放；tkinterdnd2 缺失时静默跳过（不影响其余功能）。"""
+        if not self._dnd_ok:
+            return
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", handler)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_drop_paths(data):
+        """解析 tkdnd 的拖放数据（Windows 原生路径 / X11 的 file:// URI 都能吃）。"""
+        return parse_drop_paths(data)
+
+    def _idle_input_text(self):
+        """①卡片未选输入时的提示语；支持拖拽时优先教拖拽（零学习成本的操作）。"""
+        if self._dnd_ok:
+            return "还没有选择文件（可点上方按钮，或直接把文件 / 文件夹拖进来）"
+        return "还没有选择文件（也可以把路径粘贴到上面的输入框）"
+
+    def _on_drop_input(self, event):
+        """Excel 模式拖放：接受单个 Excel 文件或文件夹（多个文件时取第一个所在项）；拖进方案文件就打开方案。"""
+        paths = self._parse_drop_paths(getattr(event, "data", ""))
+        if self._drop_recipe(paths):
+            return
+        target = next((p for p in paths
+                       if os.path.isdir(p) or p.lower().endswith((".xlsx", ".xls"))), None)
+        if target is None:
+            self._set_in_status("⚠ 请拖入 Excel 文件（.xlsx / .xls）或装表格的文件夹", C_WARN)
+            return
+        self._input_var.set(os.path.normpath(target))
+        self._after_pick()
+
+    def _on_drop_pdfs(self, event):
+        """文件加密分发模式拖放：接受一批 PDF / Word / Excel / PPT。"""
+        paths = [p for p in self._parse_drop_paths(getattr(event, "data", ""))
+                 if p.lower().endswith(DIST_EXTS)]
+        if not paths:
+            self._pdf_in_status.configure(
+                text="⚠ 请拖入 PDF / Word / Excel / PPT 文件（.doc / .xls 老格式请先另存为新格式）",
+                text_color=C_WARN)
+            return
+        self._pdf_paths = [os.path.normpath(p) for p in paths]
+        self._update_pdf_in_status()
+        self._suggest_pdf_output()
+        self._update_pdf_preview()
+
+    def _on_drop_mapping(self, event):
+        """映射清单拖放：接受单个 xlsx。"""
+        paths = self._parse_drop_paths(getattr(event, "data", ""))
+        target = next((p for p in paths if p.lower().endswith(".xlsx")), None)
+        if target is None:
+            self._pdf_map_status.configure(text="⚠ 映射清单请拖入 Excel 文件（.xlsx）",
+                                           text_color=C_WARN)
+            return
+        self._pdf_map_var.set(os.path.normpath(target))
+        self._scan_mapping()
+
+    # ── 取值预览（v2.7，A1）──────────────────────────────
+    def _on_split_col_change(self, _choice):
+        """拆分字段变更：防抖 300ms 后重新枚举该列取值（连续切换不重复读文件）。"""
+        self._enum_token += 1
+        if self._enum_after is not None:
+            self.after_cancel(self._enum_after)
+        self._enum_after = self.after(300, self._enum_values)
+
+    def _enum_values(self):
+        """子线程枚举当前拆分字段的全部取值（复用扫描时识别的模板文件）。"""
+        self._enum_after = None
+        col = self._split_var.get()
+        # 换了字段，之前的「已全量扫描」结论随之作废（新字段只枚举了样本表）
+        self._values_scope = "sample"
+        self._scan_all_token += 1
+        self._values_all, self._value_vars = [], {}
+        self._refresh_values_ui()
+        if (col in ("", COL_PLACEHOLDER) or not self._tpl_path
+                or not os.path.exists(self._tpl_path)):
+            return
+        token = self._enum_token
+        tpl, cfg = self._tpl_path, self._collect_config()
+        self._values_status.configure(text="正在枚举该字段的取值…", text_color=C_MUTED)
+
+        def work():
+            try:
+                from core.splitter import list_values
+                vals = list_values(tpl, cfg, col)
+            except Exception as e:
+                vals = None
+                # 不静默吞掉：失败原因进日志，界面只显示笼统提示（与 _scan_input 同理）
+                self._ui_q.put(("log", f"⚠ 枚举「{col}」的取值失败：{e}"))
+            self._ui_q.put(("values", (col, token, vals)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_values(self, payload):
+        """枚举结果回填：过期（已换字段/又发起新枚举）结果直接丢弃。"""
+        col, token, vals = payload
+        if token != self._enum_token or col != self._split_var.get():
+            return
+        if vals is None:
+            self._values_status.configure(
+                text="⚠ 没能枚举取值（不影响拆分，可直接开始）", text_color=C_WARN)
+            return
+        self._set_values(vals)
+
+    def _set_values(self, vals):
+        """把枚举到的取值装进勾选面板（抽样枚举与全量扫描共用这一条路径）。"""
+        self._values_all = vals
+        # 默认全选；高级设置里手填过「只拆这些取值」且能对上号时，按它预选
+        wanted = set(self._split_list(self._selvals_var.get()))
+        use_filter = bool(wanted) and any(w in vals for w in wanted)
+        if wanted and not use_filter:
+            # 换了拆分字段（或换了输入）之后，上一轮的名单对新字段一个都对不上。
+            # 留着它 = 这一跑按不存在的取值筛选 → 一行都拆不出来，界面却还挂着
+            # 「🔒 只拆其中 N 组」。清掉，并在日志里点名说清楚，别让它静默生效。
+            self._selvals_var.set("")
+            self._log("⚠ 原先限定的分组（" + "、".join(sorted(wanted))
+                      + "）在当前字段里一个都没有，已自动取消限定，本次将按全部分组拆")
+        self._values_locked = use_filter
+        self._value_vars = {}
+        for v in vals:
+            var = ctk.BooleanVar(value=(v in wanted) if use_filter else True)
+            var.trace_add("write", lambda *_: self._sync_selvals())
+            self._value_vars[v] = var
+        self._refresh_values_ui()
+        if self._values_panel is not None:      # 面板开着就重建内容
+            self._close_values_panel()
+            self._toggle_values()
+
+    def _refresh_values_ui(self):
+        """按 _values_all 更新取值摘要行：几组、示例、**来源**、异常多的告警。"""
+        n = len(self._values_all)
+        self._values_btn.pack_forget()
+        self._scanall_btn.pack_forget()
+        if not n:
+            self._close_values_panel()
+            if self._split_var.get() not in ("", COL_PLACEHOLDER) and self._tpl_path:
+                self._values_status.configure(
+                    text="选定拆分字段后，这里会列出将拆出的分组", text_color=C_MUTED)
+            return
+        shown = "、".join(self._values_all[:6]) + ("…" if n > 6 else "")
+        sel = self._split_list(self._selvals_var.get())
+        from_sample = self._tpl_is_sample and self._values_scope != "all"
+        # 已显式限定名单时不再喊「其他表可能还有别的分组」——名单对全部文件生效，
+        # 那句警告已经不成立了，和 🔒 角标并排显示只会自相矛盾。
+        sampled = from_sample and not sel
+        if sampled:
+            # ★ 关键的诚实性修复（v2.9）：取值只枚举自一个样本表，拆分却对全部
+            # 文件生效——真实分组数几乎总是更多。旧文案直说「将拆成 6 组」，用户
+            # 按它理解、跑完看到 29 组，会认为是工具算错了而不是自己看的是抽样。
+            # 数字本身没错，错的是把抽样结论说成了全量结论。**别改回去。**
+            tpl = os.path.basename(self._tpl_path or "")
+            self._values_status.configure(
+                text=f"样本「{tpl}」里有 {n} 组：{shown}"
+                     f"　⚠ 这只是 {self._scan_n} 个表中的 1 个，其他表可能还有别的分组",
+                text_color=C_WARN)
+        else:
+            scope = (f"全部 {self._scan_n} 个表共 "
+                     if self._values_scope == "all" and self._scan_n > 1 else "将拆成 ")
+            if n > 50:
+                self._values_status.configure(
+                    text=f"⚠ {scope}{n} 组：{shown}——取值异常多，若这是工号 / 姓名类字段，建议换个分组字段",
+                    text_color=C_WARN)
+            elif n == 1:
+                self._values_status.configure(
+                    text=f"只会拆出 1 组「{self._values_all[0]}」——确认字段没选错？",
+                    text_color=C_WARN)
+            else:
+                self._values_status.configure(
+                    text=f"{scope}{n} 组：{shown}", text_color=C_OK)
+        if sel:
+            self._values_status.configure(
+                text=self._values_status.cget("text") + f"　🔒 只拆其中 {len(sel)} 组",
+                text_color=C_OK)
+        kinds, nfiles = self._tpl_kinds
+        if self._values_scope == "all" and kinds > 1:
+            # v3.0：读遍全部表时顺便看出的——表其实不是同一套模板，跨文件合并时用户该心里有数
+            self._values_status.configure(
+                text=self._values_status.cget("text")
+                     + f"　·　这 {nfiles} 个表其实是 {kinds} 种模板（详见处理详情）")
+        # 「扫描全部」只要还在抽样态就一直可用：已限定名单的用户也可能想核对全量
+        if from_sample:
+            self._scanall_btn.pack(side="left", padx=(6, 0))
+        self._values_btn.pack(side="left", padx=(6, 0))
+        self._refresh_panel_hint()
+
+    def _scan_all_values(self):
+        """读遍输入里全部表格，把「抽样分组」换成完整分组清单。
+
+        做成显式按钮而不是扫描时自动跑：代价是每个文件都要完整读一遍，
+        400 个表的批次自动扫会让「选字段」这一步凭空卡好几分钟。
+        """
+        if self._scanning_all or self._running:
+            return
+        col = self._split_var.get()
+        p = self._input_var.get().strip()
+        if col in ("", COL_PLACEHOLDER) or not p or not os.path.isdir(p):
+            return
+        if self._scan_n > 30 and not messagebox.askyesno(
+                "扫描全部分组",
+                f"要列全分组，需要把 {self._scan_n} 个表各读一遍，可能要几分钟。\n"
+                "（只是读取，不会改动任何文件）\n\n现在开始？"):
+            return
+        self._scanning_all = True
+        self._scan_all_token += 1
+        token = self._scan_all_token
+        cfg = self._collect_config()
+        out_now = self._output_var.get().strip()
+        self._scanall_btn.configure(state="disabled")
+        self._values_status.configure(text="正在读取全部表格的分组…", text_color=C_MUTED)
+
+        def work():
+            from core.splitter import scan_values, template_groups, template_lines
+            # 文件清单的过滤规则与 run_split / _scan_input 保持一致，
+            # 否则「扫描出的分组」和「真正拆出的分组」又会对不上
+            out_abs = os.path.normcase(os.path.abspath(out_now)) if out_now else None
+            targets = []
+            for root, dirs, fs in os.walk(p):
+                if out_abs:
+                    ra = os.path.normcase(os.path.abspath(root))
+                    if ra == out_abs or ra.startswith(out_abs + os.sep):
+                        dirs[:] = []
+                        continue
+                for fn in sorted(fs):
+                    lf = fn.lower()
+                    if (lf.endswith(('.xlsx', '.xls')) and not fn.startswith('~$')
+                            and not lf.endswith('__tmp__.xlsx')):
+                        targets.append(os.path.join(root, fn))
+            vals, failed, pairs = set(), 0, []
+            for i, fp in enumerate(targets, 1):
+                if token != self._scan_all_token:
+                    return          # 用户换了输入/字段，本轮结果已作废
+                try:
+                    v, names = scan_values(fp, cfg, col)     # 一遍读出分组和这个表的模板
+                    vals.update(v)
+                    pairs.append((fp, names))
+                except Exception as e:
+                    failed += 1
+                    self._ui_q.put(("log", f"⚠ 读取「{os.path.basename(fp)}」的分组失败：{e}"))
+                self._ui_q.put(("scanall_prog", (token, i, len(targets))))
+            groups = template_groups(pairs)
+            tpl = (len(groups), sum(len(g["files"]) for g in groups),
+                   template_lines(groups) if len(groups) > 1 else [])
+            self._ui_q.put(("scanall", (token, col, sorted(vals), len(targets), failed, tpl)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_scan_all_prog(self, payload):
+        token, i, total = payload
+        if token != self._scan_all_token:
+            return
+        self._values_status.configure(
+            text=f"正在读取全部表格的分组… {i}/{total}", text_color=C_MUTED)
+
+    def _on_scan_all(self, payload):
+        """全量扫描回填：此后摘要行显示的是全量结论，不再带抽样警告。"""
+        token, col, vals, nfiles, failed, (kinds, ngrouped, tpl_lines) = payload
+        self._scanning_all = False
+        self._scanall_btn.configure(state="normal")
+        if token != self._scan_all_token or col != self._split_var.get():
+            return
+        self._values_scope = "all"
+        self._tpl_kinds = (kinds, ngrouped)
+        self._set_values(vals)
+        note = f"（其中 {failed} 个读取失败，见上面的 ⚠）" if failed else ""
+        self._log(f"✓ 已读遍 {nfiles} 个表：「{col}」共有 {len(vals)} 个分组{note}")
+        if kinds > 1:
+            self._log(f"📋 这 {ngrouped} 个表其实是 {kinds} 种模板（含「{col}」的 sheet 列名不完全一样）：")
+            for line in tpl_lines:
+                self._log(line)
+            self._log("  勾了「跨文件合并汇总」时按列名对齐；列名大半对不上的表单独放进「sheet 名_2」，不会错位"
+                      if self._merge_var.get() else
+                      "  没勾「跨文件合并汇总」，各表各拆，不受影响")
+
+    def _pick_template(self):
+        """手动指定样本表 —— 字段下拉和分组清单都从它读取。"""
+        init = os.path.dirname(self._tpl_path) if self._tpl_path else self._input_var.get().strip()
+        path = filedialog.askopenfilename(
+            title="选一个有代表性的表格（字段和分组从它读取）",
+            initialdir=init if init and os.path.isdir(init) else None,
+            filetypes=[("Excel 文件", "*.xlsx *.xls")])
+        if not path:
+            return
+        cfg = self._collect_config()
+        cur_in = self._input_var.get().strip()
+        self._set_scan_status("正在识别表格里的字段…", C_MUTED)
+
+        def work():
+            try:
+                from core.splitter import list_columns
+                cols = list_columns(path, cfg)
+            except Exception as e:
+                cols = []
+                self._ui_q.put(("log", f"⚠ 扫描「{os.path.basename(path)}」失败：{e}"))
+            # 复用 _on_scan：文件数/体积/输入类型沿用上一次扫描的结果，只换样本表
+            self._ui_q.put(("scan", (cols, self._scan_n, os.path.basename(path),
+                                     self._scan_is_dir, cur_in, path, self._scan_bytes)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _toggle_values(self):
+        """展开 / 收起取值勾选面板。"""
+        if self._values_panel is not None:
+            self._close_values_panel()
+            return
+        self._values_open = True
+        self._values_btn.configure(text="▾ 收起分组")
+        panel = ctk.CTkFrame(self._field_card)
+        panel.grid(row=5, column=0, padx=12, pady=(0, 8), sticky="ew")
+        panel.grid_columnconfigure(0, weight=1)
+        bar = ctk.CTkFrame(panel, fg_color="transparent")
+        bar.grid(row=0, column=0, padx=8, pady=(6, 0), sticky="w")
+        _flat_button(bar, text="全选", width=46,
+                     command=lambda: self._set_all_values(True)).pack(side="left")
+        _flat_button(bar, text="清空", width=46,
+                     command=lambda: self._set_all_values(False)).pack(side="left")
+        # 「全选＝不筛选」的既有语义在抽样场景下会咬人：样本表里恰好就是用户
+        # 想要的那几组时，全勾等于什么都没筛，其他表的分组照样会拆出来。
+        # 这个按钮让「我只要这几组」变成一个能表达出来的动作。
+        self._lock_btn = _flat_button(bar, text="只拆这几组", width=104,
+                                      command=self._lock_to_listed)
+        self._lock_btn.pack(side="left", padx=(4, 0))
+        self._values_hint = ctk.CTkLabel(bar, text="", font=ctk.CTkFont(size=11),
+                                         text_color=C_MUTED, wraplength=420,
+                                         justify="left")
+        self._values_hint.pack(side="left", padx=8)
+        self._refresh_panel_hint()
+        box = ctk.CTkScrollableFrame(panel, height=140)
+        box.grid(row=1, column=0, padx=8, pady=(2, 8), sticky="ew")
+        for v, var in self._value_vars.items():
+            ctk.CTkCheckBox(box, text=v, variable=var).pack(anchor="w")
+        self._values_panel = panel
+
+    def _refresh_panel_hint(self):
+        """勾选面板里的按钮与提示随「已限定 / 抽样」状态更新（面板开着才有意义）。
+
+        面板是按当时状态一次性搭起来的，而状态会在面板开着时变（点了「只拆这 N 组」，
+        或点「全选」取消限定），提示不跟着变就会自相矛盾。
+        """
+        if self._values_panel is None or self._lock_btn is None or self._values_hint is None:
+            return
+        n = len(self._value_vars)
+        if self._values_locked:
+            self._lock_btn.configure(text="✓ 已限定", state="disabled")
+            txt = "已限定只拆勾选的这些分组，对全部表都生效；点「全选」可取消限定"
+        else:
+            self._lock_btn.configure(text=f"只拆这 {n} 组", state="normal")
+            if self._tpl_is_sample and self._values_scope != "all":
+                txt = ("只拆勾选的分组。注意：下面这些分组只来自样本表，"
+                       "全勾＝不做筛选（其他表里的分组也会照样拆出来）")
+            else:
+                txt = "只拆勾选的分组；全选＝拆分全部"
+        self._values_hint.configure(text=txt)
+
+    def _close_values_panel(self):
+        if self._values_panel is not None:
+            self._values_panel.destroy()
+            self._values_panel = None
+            self._lock_btn = self._values_hint = None
+        self._values_open = False
+        self._values_btn.configure(text="▸ 查看/勾选分组")
+
+    def _set_all_values(self, on):
+        # 「全选 / 清空」是用户表达「不做筛选」的动作，同时解除已限定状态——
+        # 否则点了全选，界面还挂着「已限定」，两边说的不是一回事。
+        self._values_locked = False
+        # 逐个 set 会逐个触发 trace → 逐次重绘摘要行；取值多时明显发卡。
+        # 批量期间挂起同步，循环结束后统一同步一次。
+        self._bulk_sync = True
+        try:
+            for var in self._value_vars.values():
+                var.set(on)
+        finally:
+            self._bulk_sync = False
+        self._sync_selvals()
+
+    def _lock_to_listed(self):
+        """把当前列出的分组**显式**写进「只拆这些取值」（抽样场景专用）。
+
+        与「全选」的区别：全选等价于留空、等价于不筛选；这个按钮写的是一份
+        具体名单，拆分时对全部文件生效——正是「我只要城区这几个网格」的表达。
+        """
+        vals = list(self._value_vars.keys())
+        if not vals:
+            return
+        self._bulk_sync = True
+        try:
+            for var in self._value_vars.values():
+                var.set(True)
+        finally:
+            self._bulk_sync = False
+        self._values_locked = True     # 显式状态：此后即使全勾，名单也不会被清空
+        self._sync_selvals()
+        shown = "、".join(vals[:6]) + ("…" if len(vals) > 6 else "")
+        self._log(f"✓ 已限定只拆这 {len(vals)} 个分组：{shown}")
+
+    def _sync_selvals(self):
+        """勾选状态 + 已限定状态 → selected_values（与高级设置文本框始终一致）。
+
+        取消勾选任何一组＝明确要筛选，自动进入已限定；全不选则回到「不筛选」
+        （留空＝拆分时自动枚举全部取值，与 core 的既有语义一致）。已限定时即使
+        全勾也照样写出名单——这正是「只拆这 N 组」能顶住后续勾选操作的原因。
+        """
+        if not self._value_vars or self._bulk_sync:
+            return
+        checked = [v for v, var in self._value_vars.items() if var.get()]
+        if not checked:
+            self._values_locked = False
+        elif len(checked) < len(self._value_vars):
+            self._values_locked = True
+        self._selvals_var.set(", ".join(checked) if self._values_locked else "")
+        self._refresh_values_ui()   # 摘要行上的「🔒 已限定」角标要跟着变
+
+    def _build_adv_area(self, parent):
+        self._adv_btn = _flat_button(parent, text="▸ 高级设置（一般用不到）", width=200,
+                                     anchor="w", command=self._toggle_adv)
+        self._adv_btn.grid(row=2, column=0, padx=8, pady=(0, 4), sticky="w")
+        self._adv_frame = self._build_advanced(parent)   # 展开时 grid 到 row=3
+
+    def _build_advanced(self, parent):
+        f = ctk.CTkFrame(parent)
+        f.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(f, text="以下选项保持默认即可；只有扫描不到字段、或需要归并取值时才需要调整。",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).grid(
+            row=0, column=0, columnspan=2, padx=12, pady=(8, 2), sticky="w")
+
+        ctk.CTkLabel(f, text="表头识别").grid(row=1, column=0, padx=12, pady=8, sticky="w")
+        mode_map = {"auto": "自动", "row": "指定行号", "keyword": "关键词"}
+        self._header_seg = ctk.CTkSegmentedButton(f, values=["自动", "指定行号", "关键词"],
+                                                  command=self._on_header_mode)
+        self._header_seg.set(mode_map.get(self.cfg.get("header_mode", "auto"), "自动"))
+        self._header_seg.grid(row=1, column=1, padx=8, pady=8, sticky="w")
+
+        self._hrow_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self._hrow_frame.grid(row=2, column=0, columnspan=2, padx=12, pady=2, sticky="w")
+        ctk.CTkLabel(self._hrow_frame, text="表头行号（1 基）：").grid(row=0, column=0)
+        self._hrow_var = ctk.StringVar(value=str(self.cfg.get("header_row", 1)))
+        ctk.CTkEntry(self._hrow_frame, textvariable=self._hrow_var, width=80).grid(row=0, column=1, padx=6)
+
+        self._kw_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self._kw_frame.grid(row=3, column=0, columnspan=2, padx=12, pady=2, sticky="ew")
+        self._kw_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self._kw_frame, text="必含关键词A（逗号分隔）").grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self._grid_keys_var = ctk.StringVar(value=", ".join(self.cfg.get("grid_keys", [])))
+        ctk.CTkEntry(self._kw_frame, textvariable=self._grid_keys_var).grid(row=0, column=1, padx=6, pady=4, sticky="ew")
+        ctk.CTkLabel(self._kw_frame, text="必含关键词B（逗号分隔）").grid(row=1, column=0, padx=4, pady=4, sticky="w")
+        self._id_keys_var = ctk.StringVar(value=", ".join(self.cfg.get("id_keys", [])))
+        ctk.CTkEntry(self._kw_frame, textvariable=self._id_keys_var).grid(row=1, column=1, padx=6, pady=4, sticky="ew")
+
+        ctk.CTkLabel(f, text="跳过值（逗号分隔）").grid(row=4, column=0, padx=12, pady=8, sticky="w")
+        self._skip_var = ctk.StringVar(value=", ".join(self.cfg.get("skip_values", [])))
+        ctk.CTkEntry(f, textvariable=self._skip_var).grid(row=4, column=1, padx=8, pady=8, sticky="ew")
+
+        ctk.CTkLabel(f, text="只拆这些取值（逗号分隔，留空=全部）").grid(row=5, column=0, padx=12, pady=8, sticky="w")
+        self._selvals_var = ctk.StringVar(value=", ".join(self.cfg.get("selected_values", [])))
+        ctk.CTkEntry(f, textvariable=self._selvals_var).grid(row=5, column=1, padx=8, pady=8, sticky="ew")
+
+        ctk.CTkLabel(f, text="取值归并映射（JSON，选填）").grid(row=6, column=0, padx=12, pady=(8, 2), sticky="nw")
+        self._alias_box = ctk.CTkTextbox(f, height=64, wrap="none")
+        self._alias_box.grid(row=6, column=1, padx=8, pady=(8, 2), sticky="ew")
+        alias = self.cfg.get("value_alias_map", {})
+        if alias:
+            self._alias_box.insert("1.0", json.dumps(alias, ensure_ascii=False, indent=2))
+
+        opts = ctk.CTkFrame(f, fg_color="transparent")
+        opts.grid(row=7, column=0, columnspan=2, padx=8, pady=8, sticky="w")
+        self._exact_var    = ctk.BooleanVar(value=self.cfg.get("exact_match", True))
+        self._merge_var    = ctk.BooleanVar(value=self.cfg.get("merge_across_files", True))
+        self._preserve_var = ctk.BooleanVar(value=self.cfg.get("preserve_format", True))
+        self._keep_formula_var = ctk.BooleanVar(value=self.cfg.get("keep_formulas", False))
+        self._auto_open_var = ctk.BooleanVar(value=self.cfg.get("auto_open_output", True))
+        self._keep_hidden_var = ctk.BooleanVar(value=self.cfg.get("keep_hidden", False))
+        ctk.CTkCheckBox(opts, text="精确匹配", variable=self._exact_var).grid(row=0, column=0, padx=8, pady=4)
+        ctk.CTkCheckBox(opts, text="跨文件合并汇总", variable=self._merge_var).grid(row=0, column=1, padx=8, pady=4)
+        ctk.CTkCheckBox(opts, text="完成后打开输出", variable=self._auto_open_var).grid(row=0, column=2, padx=8, pady=4)
+        # 默认：隐藏的 sheet 不发、隐藏列清空（仍隐藏）、隐藏的行照常发（多半是筛选）——别人点开就能看见的东西不该藏在里面
+        ctk.CTkCheckBox(opts, text="隐藏的 sheet 和列也照样发出", variable=self._keep_hidden_var).grid(
+            row=0, column=3, padx=8, pady=4)
+        # 「保留格式」的勾选框已上移到第 ③ 步的「拆分速度」段选（v2.9），这里不再重复
+        self._keep_formula_box = ctk.CTkCheckBox(
+            opts, text="保留公式（收件人可见计算过程，仅同行公式，需选「标准」速度）",
+            variable=self._keep_formula_var)
+        self._keep_formula_box.grid(row=1, column=0, columnspan=4, padx=8, pady=(0, 4), sticky="w")
+        ctk.CTkLabel(opts, text="提示：「跨文件合并汇总」把各表的同名 sheet 按列名合到一起（列顺序不同也对得上），"
+                                "所有结果留在内存里最后统一写盘，宽表 + 大批量时明显更吃内存；默认的「按原表各自拆分」更稳。",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED,
+                     wraplength=560, justify="left").grid(
+            row=2, column=0, columnspan=4, padx=8, pady=(0, 6), sticky="w")
+
+        self._on_header_mode(self._header_seg.get())
+        return f
+
+    # ── 文件加密分发模式的步骤卡（内部名仍是 pdf，v2.10 起也收 Word/Excel/PPT）──
+    def _build_pdf_step_input(self, parent):
+        card, _ = self._step_card(parent, 0, 1, "选择要分发的文件")
+
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.grid(row=1, column=0, padx=12, pady=(6, 2), sticky="w")
+        ctk.CTkButton(btns, text="📄 选文件（PDF / Word / Excel / PPT，可多选）", width=300,
+                      command=self._pick_pdfs).pack(side="left")
+        _ghost_button(btns, text="清空", width=60,
+                      command=self._clear_pdfs).pack(side="left", padx=(10, 0))
+        self._enable_drop(card, self._on_drop_pdfs)
+
+        self._pdf_in_status = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+                                           text_color=C_MUTED, anchor="w", justify="left")
+        self._pdf_in_status.grid(row=2, column=0, padx=12, pady=(0, 10), sticky="w")
+        self._update_pdf_in_status()
+
+    def _build_pdf_step_map(self, parent):
+        card, _ = self._step_card(parent, 1, 2, "选择映射清单（Excel：网格 → 密码）")
+
+        prow = ctk.CTkFrame(card, fg_color="transparent")
+        prow.grid(row=1, column=0, padx=12, pady=(6, 2), sticky="ew")
+        prow.grid_columnconfigure(1, weight=1)
+        ctk.CTkButton(prow, text="📋 选映射清单", width=120,
+                      command=self._pick_mapping).grid(row=0, column=0)
+        self._pdf_map_var = ctk.StringVar(value=self.cfg.get("pdf_mapping_path", ""))
+        entry = ctk.CTkEntry(prow, textvariable=self._pdf_map_var)
+        entry.grid(row=0, column=1, padx=8, sticky="ew")
+        entry.bind("<Return>",   lambda e: self._on_map_edited())
+        entry.bind("<FocusOut>", lambda e: self._on_map_edited())
+        self._enable_drop(entry, self._on_drop_mapping)
+        _ghost_button(prow, text="生成模板", width=90,
+                      command=self._make_pdf_template).grid(row=0, column=2)
+
+        ctk.CTkLabel(card, text="清单每行一个网格：网格名和专属密码（只加水印时不用密码）；"
+                                "有「接收人」列会自动抄进分发清单；没有密码列时开始前可自动生成",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).grid(
+            row=2, column=0, padx=12, pady=(2, 0), sticky="w")
+
+        crow = ctk.CTkFrame(card, fg_color="transparent")
+        crow.grid(row=3, column=0, padx=12, pady=(6, 2), sticky="w")
+        ctk.CTkLabel(crow, text="网格列").pack(side="left")
+        self._pdfgrid_var = ctk.StringVar(value=self.cfg.get("pdf_grid_column") or PDF_COL_PLACEHOLDER)
+        self._pdfgrid_menu = ctk.CTkOptionMenu(crow, variable=self._pdfgrid_var,
+                                               values=[self._pdfgrid_var.get()], width=140)
+        self._pdfgrid_menu.pack(side="left", padx=(6, 12))
+        self._pdfpwd_lbl = ctk.CTkLabel(crow, text="密码列")
+        self._pdfpwd_lbl.pack(side="left")
+        self._pdfpwd_lbl_color = self._pdfpwd_lbl.cget("text_color")
+        self._pdfpwd_var = ctk.StringVar(value=self.cfg.get("pdf_password_column") or PDF_COL_PLACEHOLDER)
+        self._pdfpwd_menu = ctk.CTkOptionMenu(crow, variable=self._pdfpwd_var,
+                                              values=[self._pdfpwd_var.get()], width=140)
+        self._pdfpwd_menu.pack(side="left", padx=(6, 0))
+
+        self._pdf_map_status = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+                                            text_color=C_MUTED, anchor="w")
+        self._pdf_map_status.grid(row=4, column=0, padx=12, pady=(0, 6), sticky="w")
+
+        # 保护方式：加密、水印各自可选（v2.10，作者：有些人只要其中一个），至少留一个
+        wm = ctk.CTkFrame(card)
+        wm.grid(row=5, column=0, padx=12, pady=(2, 12), sticky="ew")
+        opts = ctk.CTkFrame(wm, fg_color="transparent")
+        opts.grid(row=0, column=0, padx=12, pady=(8, 4), sticky="w")
+        self._pdfenc_var = ctk.BooleanVar(value=self.cfg.get("pdf_encrypt", True))
+        ctk.CTkCheckBox(opts, text="加打开密码（每个网格一个）", variable=self._pdfenc_var,
+                        command=lambda: self._on_protect_toggle(self._pdfenc_var, self._pdfwm_var)
+                        ).pack(side="left")
+        self._pdfwm_var = ctk.BooleanVar(value=self.cfg.get("pdf_watermark", True))
+        ctk.CTkCheckBox(opts, text="加水印（仅 PDF，泄露可溯源）", variable=self._pdfwm_var,
+                        command=lambda: self._on_protect_toggle(self._pdfwm_var, self._pdfenc_var)
+                        ).pack(side="left", padx=(18, 0))
+        wrow = ctk.CTkFrame(wm, fg_color="transparent")
+        wrow.grid(row=1, column=0, padx=(38, 12), pady=(0, 8), sticky="w")
+        ctk.CTkLabel(wrow, text="水印文字").pack(side="left")
+        self._pdfwmtext_var = ctk.StringVar(value=self.cfg.get("pdf_watermark_text", "{grid} {date}"))
+        self._pdfwmtext_entry = ctk.CTkEntry(wrow, textvariable=self._pdfwmtext_var, width=220)
+        self._pdfwmtext_entry.pack(side="left", padx=(6, 8))
+        ctk.CTkLabel(wrow, text="{grid}＝网格名  {receiver}＝接收人  {date}＝日期",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED).pack(side="left")
+        if not (self._pdfenc_var.get() or self._pdfwm_var.get()):
+            self._pdfenc_var.set(True)    # 旧配置两项全关时兜底
+        self._update_wm_state()
+
+    def _on_protect_toggle(self, changed, other):
+        """加密 / 水印至少留一个：把最后一个勾掉时自动勾回，并说明原因。"""
+        if not changed.get() and not other.get():
+            changed.set(True)
+            self._pdf_map_status.configure(text="⚠ 加密和水印至少要选一个", text_color=C_WARN)
+        self._update_wm_state()
+
+    def _update_wm_state(self):
+        self._pdfwmtext_entry.configure(state="normal" if self._pdfwm_var.get() else "disabled")
+        enc = "normal" if self._pdfenc_var.get() else "disabled"
+        self._pdfpwd_menu.configure(state=enc)
+        self._pdfpwd_lbl.configure(text_color=C_MUTED if enc == "disabled" else self._pdfpwd_lbl_color)
+        self._update_pdf_in_status()
+
+    def _update_pdf_in_status(self):
+        n = len(self._pdf_paths)
+        if not n:
+            self._pdf_in_status.configure(
+                text="还没有选择文件；每个网格都会拿到全部所选文件。PDF 可加密和加水印，Word / Excel / PPT 只加密",
+                text_color=C_MUTED)
+            return
+        names = [os.path.basename(p) for p in self._pdf_paths]
+        shown = "、".join(names[:3]) + ("…" if n > 3 else "")
+        n_off = sum(not p.lower().endswith(".pdf") for p in self._pdf_paths)
+        enc = getattr(self, "_pdfenc_var", None)     # ①卡片先于②卡片搭，启动时还没有
+        if n_off and enc is not None and not enc.get():
+            self._pdf_in_status.configure(
+                text=f"✓ 已选 {n} 个：{shown}　⚠ 其中 {n_off} 个 Word / Excel / PPT 只能加密，"
+                     "只加水印时会跳过（要水印请先转成 PDF）", text_color=C_WARN)
+        else:
+            self._pdf_in_status.configure(text=f"✓ 已选 {n} 个：{shown}", text_color=C_OK)
+        self._update_pdf_preview()   # 文件个数变化会改变「N 网格 × M 文件」预览
+
+    def _pick_pdfs(self):
+        pats = " ".join("*" + e for e in DIST_EXTS)
+        paths = filedialog.askopenfilenames(filetypes=[("PDF / Word / Excel / PPT", pats),
+                                                       ("PDF 文件", "*.pdf")])
+        if paths:
+            self._pdf_paths = [os.path.normpath(p) for p in paths]
+            self._update_pdf_in_status()
+            self._suggest_pdf_output()
+
+    def _clear_pdfs(self):
+        self._pdf_paths = []
+        self._update_pdf_in_status()
+
+    def _suggest_pdf_output(self):
+        """文件加密分发的默认输出：第一个文件所在目录下「分发结果」。规则同 _suggest_output。"""
+        cur = self._output_var.get().strip()
+        if cur and cur != self._out_auto:
+            return
+        if self._pdf_paths:
+            auto = os.path.join(os.path.dirname(self._pdf_paths[0]), "分发结果")
+            self._output_var.set(auto)
+            self._out_auto = auto
+
+    def _pick_mapping(self):
+        path = filedialog.askopenfilename(filetypes=[("Excel 文件", "*.xlsx")])
+        if path:
+            self._pdf_map_var.set(os.path.normpath(path))
+            self._scan_mapping()
+
+    def _on_map_edited(self):
+        p = self._pdf_map_var.get().strip()
+        if p == self._scanned_map_path:
+            return
+        if p and os.path.exists(p):
+            self._scan_mapping()
+        elif p:
+            self._scanned_map_path = p
+            self._pdf_map_status.configure(text="⚠ 找不到这个文件，请检查路径", text_color=C_WARN)
+
+    def _scan_mapping(self):
+        """子线程读映射清单表头，经 UI 泵回填三个列下拉（机制同 _scan_input）。"""
+        p = self._pdf_map_var.get().strip()
+        self._scanned_map_path = p
+        if not p or not os.path.exists(p):
+            return
+        self._pdf_map_status.configure(text="正在读取清单…", text_color=C_MUTED)
+
+        def work():
+            cols, n_rows = [], 0
+            try:
+                from core.pdf_dist import list_mapping_columns
+                cols = list_mapping_columns(p)
+                # 顺带数网格行数（分发预览「N 个网格 × M 个文件」用）；清单是小表，直接全读。
+                # 逐行数有内容的行：只读模式的 max_row 来自文件里写的尺寸，程序生成的表常写错
+                from openpyxl import load_workbook
+                wb = load_workbook(p, read_only=True)
+                try:
+                    ws = wb.worksheets[0]
+                    ws.reset_dimensions()
+                    n_rows = sum(1 for row in ws.iter_rows(min_row=2, values_only=True)
+                                 if any(v is not None and str(v).strip() for v in row))
+                finally:
+                    wb.close()
+            except Exception:
+                cols, n_rows = [], 0
+            self._ui_q.put(("pdf_scan", (cols, p, n_rows)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_pdf_scan(self, payload):
+        cols, p, n_rows = payload
+        if p != self._pdf_map_var.get().strip():
+            return    # 结果已过期
+        self._pdf_n_cols = len(cols)
+        self._pdf_grid_rows = n_rows
+        if not cols:
+            self._pdf_map_status.configure(
+                text="⚠ 没读到表头：请确认清单第 1 行是列名（如 网格 / 密码 / 接收人）", text_color=C_WARN)
+            return
+        self._pdfgrid_menu.configure(values=cols)
+        if self._pdfgrid_var.get() not in cols:
+            self._pdfgrid_var.set(self._recommend_col(cols, ("网格", "部门", "区域", "单位", "分组", "组")) or cols[0])
+        self._pdfpwd_menu.configure(values=cols)
+        if self._pdfpwd_var.get() not in cols:
+            self._pdfpwd_var.set(self._recommend_col(cols, ("密码", "口令", "pwd", "密")) or cols[-1])
+        # 接收人列不再让用户选（v2.10）：它只抄进分发清单 / 水印 {receiver}，core 按列名自动认
+        self._update_pdf_preview()
+
+    def _update_pdf_preview(self):
+        """分发预览（C3）：选完清单和文件后，直接告诉用户将产出多少份副本。"""
+        g, m, cols_n = self._pdf_grid_rows, len(self._pdf_paths), self._pdf_n_cols
+        if not cols_n or not g:
+            return
+        extra = f"；{g} 个网格 × {m} 个文件 = {g * m} 份副本" if m else ""
+        self._pdf_map_status.configure(
+            text=f"✓ 识别到 {cols_n} 列 / {g} 个网格{extra}，确认下拉选的列对不对",
+            text_color=C_OK)
+
+    def _make_pdf_template(self):
+        """一键生成「网格 → 密码」映射清单模板并自动载入（C1：解决没有清单的第一步卡点）。"""
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx", initialfile="映射清单模板.xlsx",
+            filetypes=[("Excel 文件", "*.xlsx")])
+        if not path:
+            return
+        try:
+            from core.pdf_dist import write_mapping_template
+            write_mapping_template(path)
+        except Exception as e:
+            messagebox.showerror("生成失败", f"生成模板失败：{e}")
+            return
+        self._pdf_map_var.set(os.path.normpath(path))
+        self._scan_mapping()
+
+    # ── Excel 汇总模式（v2.10）：默认就是普通汇总；② 打开后先查收（谁没交、谁漏填）再汇总 ──
+    def _build_collect_steps(self, parent):
+        card, _ = self._step_card(parent, 0, 1, "选择要汇总的表格")
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.grid(row=1, column=0, padx=12, pady=(6, 2), sticky="w")
+        ctk.CTkButton(btns, text="📁 选文件夹", width=150,
+                      command=self._pick_collect_folder).pack(side="left")
+        _ghost_button(btns, text="📄 选一个文件", width=130,
+                      command=self._pick_collect_file).pack(side="left", padx=(10, 0))
+        self._col_in_var = ctk.StringVar(value=self.cfg.get("collect_input_path", ""))
+        entry = ctk.CTkEntry(card, textvariable=self._col_in_var,
+                             placeholder_text="也可以把文件夹直接拖到这里")
+        entry.grid(row=2, column=0, padx=12, pady=(6, 2), sticky="ew")
+        entry.bind("<Return>",   lambda e: self._scan_collect())
+        entry.bind("<FocusOut>", lambda e: self._scan_collect())
+        self._enable_drop(card, self._on_drop_collect)
+        self._enable_drop(entry, self._on_drop_collect)
+        self._col_in_status = ctk.CTkLabel(
+            card, text=COL_IN_TIP, font=ctk.CTkFont(size=11), text_color=C_MUTED,
+            anchor="w", justify="left", wraplength=640)
+        self._col_in_status.grid(row=3, column=0, padx=12, pady=(0, 10), sticky="w")
+
+        card2, _ = self._step_card(parent, 1, 2, "查谁没交、谁漏填（选填）")
+        self._col_check_var = ctk.BooleanVar(value=bool(self.cfg.get("collect_check")))
+        ctk.CTkSwitch(card2, text="这些表是发出去让大家填的：先查收，再汇总", variable=self._col_check_var,
+                      command=self._on_check_toggle, progress_color=PRIMARY).grid(
+            row=1, column=0, padx=12, pady=(6, 0), sticky="w")
+        ctk.CTkLabel(card2, text="打开后点「查收」：几秒列出谁没交、谁交了空表、谁哪一列漏了哪几行，"
+                                 "生成能直接发到群里的通报；不打开就是普通的合并汇总",
+                     font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w", justify="left",
+                     wraplength=640).grid(row=2, column=0, padx=12, pady=(2, 10), sticky="w")
+        form = self._col_form = ctk.CTkFrame(card2, fg_color="transparent")
+        form.grid(row=3, column=0, padx=12, pady=(0, 10), sticky="ew")
+        form.grid_columnconfigure(1, weight=1)
+
+        def field(box, row, label, key, hint, width=None):
+            ctk.CTkLabel(box, text=label).grid(row=row * 2, column=0, sticky="w", pady=(4, 0))
+            var = ctk.StringVar(value=str(self.cfg.get(key, "") or ""))
+            ctk.CTkEntry(box, textvariable=var, width=width or 140).grid(
+                row=row * 2, column=1, padx=(8, 0), pady=(4, 0), sticky="w" if width else "ew")
+            tip = ctk.CTkLabel(box, text=hint, font=ctk.CTkFont(size=11), text_color=C_MUTED,
+                               anchor="w", justify="left", wraplength=520)
+            tip.grid(row=row * 2 + 1, column=1, padx=(8, 0), sticky="w")
+            return var, tip
+
+        self._col_expect_var, self._col_expect_tip = field(form, 0, "应交名单", "collect_expect", EXPECT_TIP)
+        _ghost_button(form, text="从表格读", width=80,
+                      command=self._pick_collect_names).grid(row=0, column=2, padx=(8, 0), pady=(4, 0))
+        self._col_due_var, _ = field(form, 1, "截止时间", "collect_due",
+                                     "写进通报和催办话术，比如「10月15日 18:00」", width=220)
+        self._col_more_btn = _flat_button(form, text="▸ 更多设置", width=90, anchor="w",
+                                          command=self._toggle_col_more)
+        self._col_more_btn.grid(row=4, column=0, columnspan=3, pady=(6, 0), sticky="w")
+        more = self._col_more = ctk.CTkFrame(form, fg_color="transparent")
+        more.grid(row=5, column=0, columnspan=3, sticky="ew")
+        more.grid_columnconfigure(1, weight=1)
+        self._col_req_var, _ = field(more, 0, "必须填的列", "collect_required",
+                                     "留空自动定：有下发记录就用下发时的填写列，没有就看大多数人都填了的列")
+        self._col_by_var, _ = field(more, 1, "按哪一列分人", "collect_by",
+                                    "只在 ① 选了一个文件（大家各填各行的一张总表）时用，比如「网格」「客户经理」",
+                                    width=180)
+        self._col_title_var, _ = field(more, 2, "通报标题", "collect_title", "留空用文件夹名", width=220)
+        self._col_rec_var, _ = field(more, 3, "下发记录", "collect_record",
+                                     "用本工具拆分、并填了「让对方填写的列」才有，能查出谁改了不该改的；刚拆过会自动带上")
+        _ghost_button(more, text="选择", width=80,
+                      command=self._pick_collect_record).grid(row=6, column=2, padx=(8, 0), pady=(4, 0))
+        more.grid_remove()
+        if not self._col_check_var.get():
+            form.grid_remove()
+
+        # 结果卡片：不编号——它是③的结果，不是一个步骤。查收后显示通报，汇总后显示汇总说明
+        res = self._col_result = ctk.CTkFrame(parent, corner_radius=12, border_width=1, border_color=CARD_BORDER)
+        res.grid(row=2, column=0, padx=8, pady=(0, 10), sticky="ew")
+        res.grid_columnconfigure(0, weight=1)
+        self._col_result_title = ctk.CTkLabel(res, text="", font=ctk.CTkFont(size=14, weight="bold"))
+        self._col_result_title.grid(row=0, column=0, padx=14, pady=(10, 2), sticky="w")
+        self._col_notice_box = ctk.CTkTextbox(res, height=200, wrap="word", font=ctk.CTkFont(size=12))
+        self._col_notice_box.grid(row=1, column=0, padx=12, pady=(4, 6), sticky="ew")
+        self._col_notice_box.configure(state="disabled")
+        self._col_check_btns = ctk.CTkFrame(res, fg_color="transparent")
+        self._col_check_btns.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="w")
+        ctk.CTkButton(self._col_check_btns, text="📋 复制通报", width=110, fg_color=PRIMARY,
+                      hover_color=PRIMARY_HOVER, command=self._copy_notice).pack(side="left")
+        _ghost_button(self._col_check_btns, text="📄 打开进度表", width=110,
+                      command=self._open_collect_progress).pack(side="left", padx=(10, 0))
+        self._col_merge_btn = _ghost_button(self._col_check_btns, text="📊 汇总已交的表", width=130,
+                                            command=lambda: self._start_collect("merge"))
+        self._col_merge_btn.pack(side="left", padx=(10, 0))
+        self._col_merged_btns = ctk.CTkFrame(res, fg_color="transparent")
+        self._col_merged_btns.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="w")
+        ctk.CTkButton(self._col_merged_btns, text="📄 打开汇总表", width=120, fg_color=PRIMARY,
+                      hover_color=PRIMARY_HOVER, command=self._open_merged).pack(side="left")
+        self._col_merged_btns.grid_remove()
+        res.grid_remove()
+        p = self._col_in_var.get().strip()
+        if p and os.path.exists(p):
+            self._scan_collect()
+
+    def _on_check_toggle(self):
+        """② 的开关：开 = 查收再汇总，关 = 普通汇总。主按钮文案和提示跟着变。"""
+        if self._col_check_var.get():
+            self._col_form.grid()
+        else:
+            self._col_form.grid_remove()
+        self._col_result.grid_remove()        # 上一次的结果和现在的模式可能对不上，先收起
+        self._col_info.pop("auto_on", None)   # 用户自己拨过开关，「已替你打开」的提示就不对了
+        if self._mode == "collect":
+            self._apply_mode()
+        self._refresh_collect_status()
+
+    def _toggle_col_more(self):
+        if self._col_more.winfo_ismapped():
+            self._col_more.grid_remove()
+            self._col_more_btn.configure(text="▸ 更多设置")
+        else:
+            self._col_more.grid()
+            self._col_more_btn.configure(text="▾ 更多设置")
+
+    def _pick_collect_folder(self):
+        p = filedialog.askdirectory()
+        if p:
+            self._col_in_var.set(os.path.normpath(p))
+            self._scan_collect()
+
+    def _pick_collect_file(self):
+        p = filedialog.askopenfilename(filetypes=[("Excel 文件", "*.xlsx *.xls")])
+        if p:
+            self._col_in_var.set(os.path.normpath(p))
+            self._scan_collect()
+
+    def _on_drop_collect(self, event):
+        paths = self._parse_drop_paths(getattr(event, "data", ""))
+        if self._drop_recipe(paths):
+            return
+        rec = next((p for p in paths if p.lower().endswith(".json")), None)
+        if rec:                                    # 不是方案的 .json：当下发记录用
+            self._col_rec_var.set(os.path.normpath(rec))
+            self._col_check_var.set(True)
+            self._on_check_toggle()
+            self._col_scanned = None
+            self._scan_collect()
+            return
+        target = next((p for p in paths
+                       if os.path.isdir(p) or p.lower().endswith((".xlsx", ".xlsm", ".xls"))), None)
+        if target is None:
+            self._col_in_status.configure(text="⚠ 请拖入装表格的文件夹，或一个 Excel 文件", text_color=C_WARN)
+            return
+        self._col_in_var.set(os.path.normpath(target))
+        self._scan_collect()
+
+    def _pick_collect_record(self):
+        p = filedialog.askopenfilename(filetypes=[("下发记录", "*.json")])
+        if p:
+            self._col_rec_var.set(os.path.normpath(p))
+            self._col_scanned = None
+            self._scan_collect()
+
+    def _pick_collect_names(self):
+        """从一张名单表里读应交名单（表头含「姓名 / 网格 / 单位 …」的列，没有就取第一列）。"""
+        p = filedialog.askopenfilename(filetypes=[("Excel 文件", "*.xlsx *.xls")])
+        if not p:
+            return
+        try:
+            from core.collect import read_name_list
+            names = read_name_list(p)
+        except Exception as e:
+            messagebox.showerror("读不了名单", f"这张表读不了：{e}")
+            return
+        if not names:
+            messagebox.showwarning("没读到名字", "这张表里没读到名字，请确认第一列或「姓名」列里有内容。")
+            return
+        self._col_expect_var.set("、".join(names))
+        self._col_expect_tip.configure(text=f"✓ 从「{os.path.basename(p)}」读到 {len(names)} 个名字",
+                                       text_color=C_OK)
+
+    def _scan_collect(self):
+        """子线程清点：几个表、有没有下发记录 / 名单表（经 UI 泵回填，机制同 _scan_input）。"""
+        p = self._col_in_var.get().strip()
+        if not p or p == self._col_scanned:
+            return
+        self._col_scanned = p
+        if not os.path.exists(p):
+            self._col_info = {}
+            self._col_in_status.configure(text="⚠ 找不到这个文件夹或文件，请检查路径", text_color=C_WARN)
+            return
+        self._col_in_status.configure(text="正在清点…", text_color=C_MUTED)
+        chosen = self._col_rec_var.get().strip()
+
+        def work():
+            info: dict[str, Any] = {"path": p}
+            try:
+                from core import collect
+                base = p if os.path.isdir(p) else os.path.dirname(p)
+                files, lists = collect.returned_files(p, os.path.join(base, collect.RESULT_DIR))
+                info["n"] = len(files) + (len(lists) if os.path.isdir(p) else 0)
+                info["lists"] = [os.path.basename(x) for x in lists]
+                near = collect.find_record(p)
+                rp = chosen if chosen and os.path.isfile(chosen) else near
+                rec = collect.load_record(rp) if rp else None
+                if rec:
+                    stems = [os.path.splitext(os.path.basename(f[1]))[0] for f in files]
+                    info["record"] = {
+                        "path": rp, "near": rp == near, "title": rec.get("title", ""),
+                        "created": str(rec.get("created", ""))[5:10], "names": list(rec["groups"]),
+                        # 用文件名粗看一下这份记录和这个文件夹是不是一批（改了名的认不出，只用来提示）
+                        "hits": sum(1 for g in rec["groups"] if any(g in s for s in stems))}
+            except Exception as e:
+                info["error"] = str(e)
+            self._ui_q.put(("collect_scan", info))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_collect_scan(self, info):
+        if info["path"] != self._col_in_var.get().strip():
+            return    # 结果已过期
+        self._col_info = info
+        rec = info.get("record")
+        # 检测到这一批的下发记录或名单表：多半是在收大家填的表，替用户打开 ②
+        if (rec and (rec["near"] or rec["hits"]) or info.get("lists")) and not self._col_check_var.get():
+            self._col_check_var.set(True)
+            self._on_check_toggle()
+            info["auto_on"] = "下发记录" if rec else "名单表"
+        self._refresh_collect_status()
+
+    def _refresh_collect_status(self):
+        """① 的状态行和 ② 应交名单的提示：随清点结果和 ② 的开关一起变。"""
+        info = self._col_info
+        if not info:
+            return
+        if info.get("error"):
+            self._col_in_status.configure(text=f"⚠ 读不了这个位置：{info['error']}", text_color=C_WARN)
+            return
+        check = self._col_check_var.get()
+        name = os.path.basename(info["path"])
+        if os.path.isfile(info["path"]):
+            text = (f"✓ 一张总表「{name}」：在 ②「更多设置」里填按哪一列分人" if check
+                    else f"✓ 会把「{name}」里的各个 sheet 合成一张")
+            ok = True
+        elif info.get("n"):
+            text, ok = f"✓ 找到 {info['n']} 个表，汇总结果放在这个文件夹里的「汇总结果」", True
+        else:
+            text, ok = "⚠ 文件夹里还没有表格（.xlsx / .xls）", False
+        if info.get("auto_on"):
+            text += f"；有这一批的{info['auto_on']}，已替你打开第 ② 步的查收"
+        self._col_in_status.configure(text=text, text_color=C_OK if ok else C_WARN)
+        rec = info.get("record")
+        tip, color = EXPECT_TIP, C_MUTED
+        if rec:
+            shown = "、".join(rec["names"][:4]) + (" 等" if len(rec["names"]) > 4 else "")
+            label = f"「{rec['title']}」" if rec["title"] else ""
+            tip = f"留空就按下发记录{label}（{rec['created']} 拆分）：应交 {len(rec['names'])} 个，{shown}"
+            color = C_OK
+            if not rec["near"] and not rec["hits"]:
+                tip = f"⚠ 下发记录{label}的分组名和这个文件夹里的文件名对不上，可能不是这一批；在「更多设置」里换掉或清空"
+                color = C_WARN
+        elif info.get("lists"):
+            tip, color = "留空就用文件夹里的名单表：" + "、".join(info["lists"]), C_OK
+        if not self._col_expect_var.get().strip():
+            self._col_expect_tip.configure(text=tip, text_color=color)
+
+    def _start_collect(self, action):
+        """action：merge（普通汇总，或查收后汇总已交的表）/ check（查收）。结果写进输入旁的「汇总结果」。"""
+        cfg = self._collect_config()
+        p = cfg["collect_input_path"]
+        check = cfg["collect_check"]
+        if not p or not os.path.exists(p):
+            messagebox.showwarning("先选择表格", "请先在第 ① 步选择装表格的文件夹（或一个 Excel 文件）。")
+            return
+        if check and os.path.isfile(p) and not cfg["collect_by"]:
+            messagebox.showwarning("填一下按哪一列分人",
+                                   "选的是一张总表：请在第 ②「更多设置」里填「按哪一列分人」（比如 网格、客户经理），\n"
+                                   "我按这一列的取值逐人查。\n\n只想把它的各个 sheet 合成一张的话，关掉第 ② 步的开关就行。")
+            return
+        locks = self._find_open_locks(p)
+        if locks:
+            shown = "、".join(locks[:3]) + (" 等" if len(locks) > 3 else "")
+            if not messagebox.askyesno(
+                    "文件正被打开",
+                    f"检测到以下文件正被 Excel/WPS 打开：{shown}\n"
+                    "读到的是「打开前保存的内容」，刚改的不会算进去。\n\n建议先关闭这些文件。仍要继续吗？"):
+                return
+        run_cfg = dict(cfg, input_path=p, output_path="")
+        if action == "check":
+            self._enter_running("⏳ 正在查收…", "已开始，正在清点收回来的表…")
+        else:
+            self._enter_running("⏳ 正在汇总…", "已开始，先查收一遍再汇总…" if check else "已开始，正在读取表格…")
+        self._col_merge_btn.configure(state="disabled")
+        self._col_result.grid_remove()
+
+        def run():
+            try:
+                from core.collect import check_collect, merge_tables, run_collect
+                fn = check_collect if action == "check" else (run_collect if check else merge_tables)
+                output_path = fn(run_cfg,
+                                 log_fn=lambda m: self._ui_q.put(("log", m)),
+                                 progress_fn=lambda v: self._ui_q.put(("progress", v)),
+                                 stop_flag=lambda: self._stop_flag)
+            except Exception as e:
+                self._ui_q.put(("log", f"\n❌ 运行出错：{e}"))
+                output_path = None
+            self._ui_q.put(("done", (dict(cfg, _collect_action=action), output_path)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _show_collect_result(self, title, text, checked):
+        self._col_result_title.configure(text=title)
+        # 框高随内容：汇总说明常常只有三四行，固定高度会空出一大块
+        self._col_notice_box.configure(height=min(240, 30 + 20 * (text.count("\n") + 1)))
+        self._col_notice_box.configure(state="normal")
+        self._col_notice_box.delete("1.0", "end")
+        self._col_notice_box.insert("1.0", text)
+        self._col_notice_box.configure(state="disabled")
+        if checked:
+            self._col_merged_btns.grid_remove()
+            self._col_check_btns.grid()
+        else:
+            self._col_check_btns.grid_remove()
+            self._col_merged_btns.grid()
+        self._col_result.grid()
+        self.after(150, lambda: self._body._parent_canvas.yview_moveto(1.0))
+
+    def _on_collect_done(self, cfg, output_path):
+        """Excel 汇总完成：查收 → 通报 + 进度表；汇总 → 汇总说明 + 打开汇总表。"""
+        self._col_merge_btn.configure(state="normal")
+        s = self._last_summary or {}
+        action = cfg.get("_collect_action", "merge")
+        if self._stop_flag or s.get("stopped"):
+            self._run_status.configure(text="⏹ 已停止，这一轮没有生成结果", text_color=C_WARN)
+            return
+        if not output_path:
+            if s.get("mode") in ("collect", "merge"):      # 正常跑完，只是没有能合并的数据
+                self._run_status.configure(text="⚠ 没有生成汇总表：没有能合并的数据（详见处理详情）",
+                                           text_color=C_WARN)
+                self._toggle_log(show=True)
+                return
+            self._run_status.configure(
+                text="❌ 没有完成：原因见下方「处理详情」；可点「复制日志」连同反馈一起发给作者",
+                text_color=C_ERR)
+            self._copylog_btn.grid()
+            self._toggle_log(show=True)
+            return
+        self._last_output = output_path if os.path.isdir(output_path) else os.path.dirname(output_path)
+        self._open_btn.grid()
+        try:
+            save_config({k: v for k, v in cfg.items() if not k.startswith("_")})
+        except Exception:
+            pass
+        lines, warn = [], False
+        if s.get("mode") in ("collect_check", "collect"):
+            exp, sub, ok = s.get("expected"), s.get("submitted", 0), s.get("ok", 0)
+            done_all = (ok == exp) if exp is not None else (sub and ok == sub)
+            warn = not done_all
+            problems = [f"{lab} {s[k]}" for k, lab in (("missing", "未交"), ("empty", "空表"), ("partial", "漏填"),
+                                                       ("invalid", "填写有误"), ("changed", "有改动"), ("bad", "没法查"), ("extra", "名单外"))
+                        if s.get(k)]
+            head = f"📊 应交 {exp} · 已交 {sub} · 合格 {ok}" if exp is not None else f"📊 已收 {sub} 份 · 合格 {ok} 份"
+            lines.append(head + ("（" + " · ".join(problems) + "）" if problems else ""))
+        if action == "check":
+            text = ""
+            try:
+                with open(s.get("notice") or "", encoding="utf-8-sig") as f:
+                    text = f.read()
+            except OSError:
+                pass
+            self._col_notice = text
+            self._col_progress = s.get("progress", "")
+            self._col_merge_btn.configure(text="📊 汇总已交的表" if warn else "📊 汇总成一张")
+            self._show_collect_result("📣 查收结果（可直接复制到群里）",
+                                      text or "（通报没写成文件，请看下方「处理详情」）", True)
+            self._run_status.configure(
+                text="✅ 查收完成：通报在下方，点「复制通报」发到群里" if warn else "✅ 全部交齐、填写完整，可以汇总了",
+                text_color=C_OK)
+            lines.append(f"📁 {self._last_output}")
+        else:
+            self._col_merged = output_path
+            self._col_notice = s.get("report_text", "")
+            self._show_collect_result("✅ 汇总完成", self._col_notice or "（详见处理详情）", False)
+            self._run_status.configure(text="✅ 汇总完成！点「打开汇总表」查看", text_color=C_OK)
+            lines.insert(0, f"📄 汇总 {s.get('files', '?')} 个表 · {s.get('rows', '?')} 行 → {os.path.basename(output_path)}")
+            lines.append(f"📁 {self._last_output}")
+            self._log("💬 用得顺手或踩了坑？点「反馈建议」匿名告诉作者（1 分钟）。")
+        self._summary_lbl.configure(text="\n".join(lines), text_color=C_WARN if warn else C_OK)
+        self._summary_banner.configure(fg_color=("gray90", "gray20") if warn else OK_BANNER_BG)
+        self._summary_banner.grid()
+        if self._warn_count:
+            self._log_btn.configure(text=self._log_btn_text())
+
+    def _copy_notice(self):
+        if not self._col_notice:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._col_notice)
+            self._run_status.configure(text="📋 通报已复制，可直接粘贴到群里；逐人催办在通报末尾", text_color=C_OK)
+        except Exception:
+            pass
+
+    def _open_collect_progress(self):
+        p = self._col_progress
+        if not p or not os.path.exists(p):
+            self._run_status.configure(text="⚠ 进度表不在了，请重新查收一次", text_color=C_WARN)
+            return
+        if not open_folder(p):
+            self._run_status.configure(text=f"⚠ 打不开进度表，文件在：{p}", text_color=C_WARN)
+
+    def _open_merged(self):
+        p = self._col_merged
+        if not p or not os.path.exists(p):
+            self._run_status.configure(text="⚠ 汇总表不在了，请重新汇总一次", text_color=C_WARN)
+            return
+        if not open_folder(p):
+            self._run_status.configure(text=f"⚠ 打不开汇总表，文件在：{p}", text_color=C_WARN)
+
+    @staticmethod
+    def _recommend_col(cols, keywords):
+        for kw in keywords:
+            for c in cols:
+                if kw.lower() in str(c).lower():
+                    return c
+        return None
+
+    # ── 模式切换 ─────────────────────────────────────────
+    def _on_mode_change(self, label):
+        self._mode = next((k for k, v in MODE_LABELS.items() if v == label), "excel")
+        self._apply_mode()
+
+    def _start_text(self):
+        if self._mode == "collect":
+            return "🔍 查收（看谁没交、谁漏填）" if self._col_check_var.get() else "▶ 开始汇总"
+        return {"pdf": "🔐 开始分发"}.get(self._mode, "▶ 开始拆分")
+
+    def _apply_mode(self):
+        """按当前模式显示对应步骤区并更新③卡片文案；运行中禁止切换按钮已够复杂，
+        简单起见运行中也允许切界面，但开始按钮在运行中本来就是禁用态。"""
+        for fr in (self._excel_frame, self._pdf_frame, self._collect_frame):
+            fr.grid_remove()
+        # Excel 汇总的结果固定放在输入旁的「汇总结果」：收起保存位置；拆分速度只有拆分模式有意义
+        for w, show in ((self._out_row, self._mode != "collect"),
+                        (self._speed_row, self._mode == "excel"),
+                        (self._speed_hint, self._mode == "excel")):
+            if show:
+                w.grid()
+            else:
+                w.grid_remove()
+        if self._mode == "collect":
+            self._collect_frame.grid()
+            check = self._col_check_var.get()
+            self._action_title.configure(text="查收" if check else "开始汇总")
+            if not self._running:
+                self._start_btn.configure(text=self._start_text())
+                self._run_status.configure(
+                    text="收回几份就点一次「查收」；交齐后在结果里点「汇总成一张」" if check else
+                    "选好表格直接点「开始汇总」：同一套模板的表合成一张，每行标上来自哪个文件，列顺序不同也能对齐",
+                    text_color=C_MUTED)
+        elif self._mode == "pdf":
+            self._pdf_frame.grid()
+            self._action_title.configure(text="开始分发")
+            if not self._running:
+                self._start_btn.configure(text="🔐 开始分发")
+                self._run_status.configure(
+                    text="完成 ① ② 后点「开始分发」；每个网格生成一份带专属密码 / 水印的副本，并输出分发清单",
+                    text_color=C_MUTED)
+        else:
+            self._excel_frame.grid()
+            self._action_title.configure(text="开始拆分")
+            if not self._running:
+                self._start_btn.configure(text="▶ 开始拆分")
+                self._run_status.configure(
+                    text="完成 ① ② 后直接点「开始拆分」；保存位置不用改，结果会放进自动创建的「拆分结果」文件夹",
+                    text_color=C_MUTED)
+
+    def _build_action(self, parent):
+        card, self._action_title = self._step_card(parent, 2, 3, "开始拆分", padx=20, pady=(6, 0))
+
+        orow = self._out_row = ctk.CTkFrame(card, fg_color="transparent")
+        orow.grid(row=1, column=0, padx=12, pady=(4, 2), sticky="ew")
+        orow.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(orow, text="结果保存到").grid(row=0, column=0, sticky="w")
+        self._output_var = ctk.StringVar(value=self.cfg.get("output_path", ""))
+        ctk.CTkEntry(orow, textvariable=self._output_var).grid(row=0, column=1, padx=8, sticky="ew")
+        _ghost_button(orow, text="浏览", width=60,
+                      command=self._browse_output).grid(row=0, column=2)
+
+        # 速度模式（v2.9）：从「高级设置 → 保留格式」提到主操作区。
+        # 这是唯一能把耗时拉开数倍的选项，藏在折叠面板里等于不存在——用户只会
+        # 得出「这工具拆得慢」的结论，而不会去翻高级设置找到它（真实反馈）。
+        # 这里是 preserve_format 的**唯一**界面入口，高级设置里的那个勾选框已移除，
+        # 别再加回去：同一个开关两处控制，用户永远不确定哪个生效。
+        srow = self._speed_row = ctk.CTkFrame(card, fg_color="transparent")
+        srow.grid(row=2, column=0, padx=12, pady=(8, 0), sticky="w")
+        ctk.CTkLabel(srow, text="拆分速度").pack(side="left")
+        self._speed_seg = ctk.CTkSegmentedButton(
+            srow, values=[SPEED_STD, SPEED_FAST], command=self._on_speed_change,
+            selected_color=PRIMARY, selected_hover_color=PRIMARY_HOVER,
+            height=30, font=ctk.CTkFont(size=12))
+        self._speed_seg.set(SPEED_STD if self._preserve_var.get() else SPEED_FAST)
+        self._speed_seg.pack(side="left", padx=(8, 0))
+        self._speed_hint = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11),
+                                        text_color=C_MUTED, anchor="w", justify="left",
+                                        wraplength=640)
+        self._speed_hint.grid(row=3, column=0, padx=12, pady=(2, 0), sticky="w")
+        self._on_speed_change(self._speed_seg.get())
+
+        btns = ctk.CTkFrame(card, fg_color="transparent")
+        btns.grid(row=4, column=0, padx=12, pady=(8, 2), sticky="w")
+        # 主按钮是全页唯一核心动作（v2.7.1）：加高配粗 + 品牌主色，保证第一眼锁定
+        self._start_btn = ctk.CTkButton(btns, text="▶ 开始拆分", width=220, height=44,
+                                        corner_radius=10,
+                                        font=ctk.CTkFont(size=15, weight="bold"),
+                                        fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+                                        command=self._start)
+        self._start_btn.grid(row=0, column=0)
+        self._stop_btn = ctk.CTkButton(btns, text="⏹ 停止", width=90,
+                                       fg_color="gray40", hover_color="gray30",
+                                       command=self._stop)
+        self._stop_btn.grid(row=0, column=1, padx=(10, 0))
+        self._stop_btn.grid_remove()          # 只在运行时出现
+        self._open_btn = _ghost_button(btns, text="📂 打开输出文件夹", width=140,
+                                       command=self._open_output)
+        self._open_btn.grid(row=0, column=2, padx=(10, 0))
+        self._open_btn.grid_remove()          # 成功后出现
+
+        self._progress = ctk.CTkProgressBar(card, corner_radius=6,
+                                           progress_color=PRIMARY)
+        self._progress.grid(row=5, column=0, padx=12, pady=(8, 2), sticky="ew")
+        self._progress.set(0)
+        self._run_status = ctk.CTkLabel(card, text="完成 ① ② 后直接点「开始拆分」；保存位置不用改，结果会放进自动创建的「拆分结果」文件夹",
+                                        font=ctk.CTkFont(size=11), text_color=C_MUTED, anchor="w")
+        self._run_status.grid(row=6, column=0, padx=12, pady=(0, 2), sticky="w")
+        # 完成摘要（v2.7，A4；v2.7.1 横幅化）：浅绿底圆角横幅承载「完成瞬间」的
+        # 明确成功反馈——摘要内容与逻辑不变，只加视觉承载。
+        self._summary_banner = ctk.CTkFrame(card, corner_radius=10,
+                                            fg_color=OK_BANNER_BG)
+        self._summary_banner.grid(row=7, column=0, padx=12, pady=(0, 10), sticky="ew")
+        self._summary_banner.grid_remove()
+        self._summary_lbl = ctk.CTkLabel(self._summary_banner, text="",
+                                         font=ctk.CTkFont(size=12, weight="bold"),
+                                         text_color=C_OK, anchor="w", justify="left")
+        self._summary_lbl.grid(row=0, column=0, padx=14, pady=8, sticky="w")
+        # 跑完后的小提示：这次的设置存成方案，下个月一键套用（v3.0）
+        self._recipe_tip = ctk.CTkFrame(card, fg_color="transparent")
+        self._recipe_tip.grid(row=8, column=0, padx=8, pady=(0, 6), sticky="w")
+        _flat_button(self._recipe_tip, text="📋 把这次的设置存成方案，下个月一键用", width=260, anchor="w",
+                     command=self._save_recipe).pack(side="left")
+        _flat_button(self._recipe_tip, text="不再提示", width=70, command=self._recipe_tip_never).pack(side="left")
+        self._recipe_tip.grid_remove()
+
+    # ── 方案（v3.0）：把一次设置存成小文件，下个月一键套用、发给同事也能用 ──
+    def _recipe_dir(self):
+        from core.recipe import RECIPE_DIR
+        return os.path.join(_app_dir(), RECIPE_DIR)
+
+    def _recipe_menu(self):
+        """页脚「📋 方案」：存为方案 / 打开方案 / 最近用过的。"""
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="存为方案…", command=self._save_recipe)
+        menu.add_command(label="打开方案…", command=self._open_recipe)
+        recent = [p for p in self.cfg.get("recent_recipes", []) if isinstance(p, str) and os.path.isfile(p)]
+        if recent:
+            menu.add_separator()
+            for p in recent:
+                menu.add_command(label=os.path.splitext(os.path.basename(p))[0],
+                                 command=lambda p=p: self._apply_recipe(p))
+        btn = self._recipe_btn
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() - 4 - 22 * (len(recent) + 3))
+        finally:
+            menu.grab_release()
+
+    def _remember_recipe(self, path=None, tip_off=None):
+        """最近用过的方案（最多 5 个）和「不再提示」写进配置文件；不动上次成功运行记下的其余设置。"""
+        from core.recipe import RECENT_MAX
+        if path:
+            path = os.path.normpath(path)
+            recent = [path] + [p for p in self.cfg.get("recent_recipes", []) if os.path.normpath(p) != path]
+            self.cfg["recent_recipes"] = recent[:RECENT_MAX]
+        if tip_off is not None:
+            self.cfg["recipe_tip_off"] = tip_off
+        try:
+            saved = load_config()
+            saved["recent_recipes"] = self.cfg.get("recent_recipes", [])
+            saved["recipe_tip_off"] = self.cfg.get("recipe_tip_off", False)
+            save_config(saved)
+        except Exception:
+            pass
+
+    def _recipe_input_name(self):
+        if self._mode == "collect":
+            return self._col_in_var.get().strip()
+        if self._mode == "pdf":
+            return self._pdf_map_var.get().strip()
+        return self._input_var.get().strip()
+
+    def _save_recipe(self):
+        from core import recipe as R
+        cfg = self._collect_config()
+        base = os.path.basename(os.path.normpath(self._recipe_input_name())) if self._recipe_input_name() else ""
+        default = os.path.splitext(base)[0] or R.MODE_NAMES[self._mode]
+        os.makedirs(self._recipe_dir(), exist_ok=True)
+        path = filedialog.asksaveasfilename(title="存为方案", initialdir=self._recipe_dir(),
+                                            initialfile=R.recipe_filename(default),
+                                            defaultextension=".json", filetypes=[("方案", "*.json")])
+        if not path:
+            return
+        name = os.path.splitext(os.path.basename(path))[0]
+        cols = self._columns if self._mode == "excel" else None
+        try:
+            rec = R.make_recipe(cfg, self._mode, name, columns=cols, input_name=self._recipe_input_name(),
+                                app=APP_VERSION)
+            R.save_recipe(rec, path)
+        except Exception as e:
+            messagebox.showerror("没存成", f"方案没存成：{e}")
+            return
+        self._remember_recipe(path)
+        self._recipe_tip.grid_remove()
+        tip = ""
+        if rec["settings"].get("collect_expect"):
+            from core.collect import split_names
+            tip = f"（里面有应交名单 {len(split_names(rec['settings']['collect_expect']))} 个，发给同事前确认可以给对方看）"
+        self._log(f"📋 已存为方案「{name}」：{R.summary(rec)}。文件在：{path}")
+        self._run_status.configure(text=f"📋 已存为方案「{name}」，下次点「📋 方案」就能一键套用{tip}",
+                                   text_color=C_OK)
+
+    def _open_recipe(self):
+        path = filedialog.askopenfilename(title="打开方案", initialdir=self._recipe_dir()
+                                          if os.path.isdir(self._recipe_dir()) else None,
+                                          filetypes=[("方案", "*.json")])
+        if path:
+            self._apply_recipe(path)
+
+    def _drop_recipe(self, paths):
+        """拖进来的是方案文件就打开它，返回 True；不是方案的 .json（如下发记录）返回 False。"""
+        from core.recipe import is_recipe
+        p = next((p for p in paths if p.lower().endswith(".json") and is_recipe(p)), None)
+        if p:
+            self._apply_recipe(p)
+            return True
+        return False
+
+    def _apply_recipe(self, path):
+        """套用方案：切到对应模式、填好各个控件；已经选了表就当场比一比列对不对得上。路径不动，截止时间清空。"""
+        from core import recipe as R
+        if self._running:
+            messagebox.showinfo("正在运行", "等这一轮跑完再套用方案")
+            return
+        try:
+            rec, warns = R.load_recipe(path)
+        except R.RecipeError as e:
+            messagebox.showerror("方案打不开", str(e))
+            return
+        new, _changed, notes = R.apply_recipe(self._collect_config(), rec)
+        self.cfg.update(new)
+        self._fill_from_recipe(rec["settings"], rec["mode"])
+        self._recipe_active = rec
+        self._mode = rec["mode"]
+        self._mode_seg.set(MODE_LABELS[self._mode])
+        self._apply_mode()
+        self._remember_recipe(path)
+        self._log(f"📋 已套用方案「{rec['name']}」（{R.MODE_NAMES[rec['mode']]}）：{R.summary(rec)}")
+        for w in warns + notes:
+            self._log(f"  ℹ️ {w}")
+        msg = f"📋 已套用方案「{rec['name']}」"
+        if rec["mode"] == "excel" and self._columns:
+            self._on_columns(self._columns)          # 已经选了表：当场检查方案里的字段在不在
+        elif rec["mode"] == "excel":
+            msg += "：现在选这个月的表格就行"
+        elif rec["mode"] == "collect":
+            msg += "：选收回来的文件夹，截止时间请重新填"
+            p = self._col_in_var.get().strip()
+            if p and os.path.exists(p):
+                self._col_scanned = None
+                self._scan_collect()
+        else:
+            msg += "：选这次要分发的文件和清单"
+        self._run_status.configure(text=msg, text_color=C_OK)
+
+    def _fill_from_recipe(self, st, mode):
+        """把方案里的设置填进各个控件（只填方案里有的键）。"""
+        def has(k):
+            return k in st
+        if mode == "excel":
+            if has("split_column"):
+                self._split_var.set(st["split_column"] or COL_PLACEHOLDER)
+            if has("person_column"):
+                self._pcol_var.set(st["person_column"] or COL_PLACEHOLDER)
+            if has("to_person"):
+                self._person_var.set(st["to_person"])
+                self._update_person_state()
+            if has("selected_values"):
+                self._selvals_var.set(", ".join(st["selected_values"]))
+                self._values_locked = bool(st["selected_values"])
+            for k, var in (("grid_keys", self._grid_keys_var), ("id_keys", self._id_keys_var),
+                           ("person_file_filter", self._pfilter_var), ("skip_values", self._skip_var)):
+                if has(k):
+                    var.set(", ".join(st[k]))
+            for k, var in (("make_zip", self._zip_var), ("merge_across_files", self._merge_var),
+                           ("exact_match", self._exact_var), ("keep_hidden", self._keep_hidden_var)):
+                if has(k):
+                    var.set(st[k])
+            if has("preserve_format"):
+                label = SPEED_STD if st["preserve_format"] else SPEED_FAST
+                self._speed_seg.set(label)
+                self._on_speed_change(label)
+            if has("keep_formulas") and self._preserve_var.get():
+                self._keep_formula_var.set(st["keep_formulas"])
+            if has("value_alias_map"):
+                self._alias_box.delete("1.0", "end")
+                if st["value_alias_map"]:
+                    self._alias_box.insert("1.0", json.dumps(st["value_alias_map"], ensure_ascii=False, indent=2))
+            if has("fill_columns"):
+                self._fill_var.set(st["fill_columns"])
+            self._due_var.set("")
+        if mode in ("excel", "collect"):
+            if has("header_mode"):
+                label = {"auto": "自动", "row": "指定行号", "keyword": "关键词"}[st["header_mode"]]
+                self._header_seg.set(label)
+                self._on_header_mode(label)
+            if has("header_row"):
+                self._hrow_var.set(str(st["header_row"]))
+        if mode == "collect":
+            for k, var in (("collect_expect", self._col_expect_var), ("collect_required", self._col_req_var),
+                           ("collect_by", self._col_by_var), ("collect_title", self._col_title_var)):
+                if has(k):
+                    var.set(st[k])
+            self._col_due_var.set("")
+            self._col_rec_var.set("")
+            if has("collect_check"):
+                self._col_check_var.set(st["collect_check"])
+                self._on_check_toggle()
+        if mode == "pdf":
+            for k, var in (("pdf_grid_column", self._pdfgrid_var), ("pdf_password_column", self._pdfpwd_var)):
+                if has(k):
+                    var.set(st[k] or PDF_COL_PLACEHOLDER)
+            for k, var in (("pdf_encrypt", self._pdfenc_var), ("pdf_watermark", self._pdfwm_var)):
+                if has(k):
+                    var.set(st[k])
+            if not self._pdfenc_var.get() and not self._pdfwm_var.get():
+                self._pdfenc_var.set(True)
+            if has("pdf_watermark_text"):
+                self._pdfwmtext_var.set(st["pdf_watermark_text"])
+
+    def _offer_recipe(self, cfg):
+        """成功跑完一次：结果区出现「存成方案」的小链接。当前设置已经是最近某个方案、或点过「不再提示」时不出现。"""
+        from core import recipe as R
+        mode = cfg.get("ui_mode", "excel")
+        if self.cfg.get("recipe_tip_off") or mode not in R.RECIPE_KEYS:
+            return
+        mine = R.make_recipe(cfg, mode, "x")["settings"]
+        for p in self.cfg.get("recent_recipes", []):
+            try:
+                rec, _w = R.load_recipe(p)
+            except (R.RecipeError, TypeError):
+                continue
+            if rec["mode"] == mode and rec["settings"] == mine:
+                return
+        self._recipe_tip.grid()
+
+    def _recipe_tip_never(self):
+        self._recipe_tip.grid_remove()
+        self._remember_recipe(tip_off=True)
+
+    def _on_speed_change(self, label):
+        """速度模式 → preserve_format，并联动「保留公式」（它必须先有保留格式）。"""
+        std = (label != SPEED_FAST)
+        self._preserve_var.set(std)
+        if std:
+            self._speed_hint.configure(
+                text="完整保留表头、字体、颜色、列宽——收件人拿到的表和原表长得一样。"
+                     "代价是逐格复制格式，文件多时会明显慢一些。")
+        else:
+            self._speed_hint.configure(
+                text="只输出数据（纯文本/数字），不保留格式与公式，速度快很多。"
+                     "适合对方只要数、不看排版的场景。")
+        self._update_formula_state()
+
+    def _update_formula_state(self):
+        """极速模式下「保留公式」无从谈起（它依赖保留格式那条写入路径）：
+        直接置灰并取消勾选，而不是留着一个勾了也不生效的框。"""
+        box = getattr(self, "_keep_formula_box", None)
+        if box is None:
+            return
+        if self._preserve_var.get():
+            box.configure(state="normal")
+        else:
+            self._keep_formula_var.set(False)
+            box.configure(state="disabled")
+
+    def _build_bottom(self, parent):
+        bar = ctk.CTkFrame(parent, fg_color="transparent")
+        bar.grid(row=3, column=0, padx=20, pady=(4, 0), sticky="ew")
+        bar.grid_columnconfigure(1, weight=1)
+        self._log_btn = _flat_button(bar, text="▸ 处理详情", width=100, anchor="w",
+                                     command=self._toggle_log)
+        self._log_btn.grid(row=0, column=0, sticky="w")
+        self._copylog_btn = _flat_button(bar, text="📋 复制日志", width=90, anchor="w",
+                                         command=self._copy_log)
+        self._copylog_btn.grid(row=0, column=1, sticky="w", padx=(4, 0))
+        self._copylog_btn.grid_remove()      # 只在失败时出现（配合反馈问卷降低求助门槛）
+        right = ctk.CTkFrame(bar, fg_color="transparent")
+        right.grid(row=0, column=2, sticky="e")
+        self._recipe_btn = _flat_button(right, text="📋 方案", width=70, command=self._recipe_menu)
+        self._recipe_btn.pack(side="left")
+        _flat_button(right, text="❓ 常见问题", width=90,
+                     command=lambda: webbrowser.open(FAQ_URL)).pack(side="left")
+        _flat_button(right, text="💬 反馈建议", width=90,
+                     command=self._open_feedback).pack(side="left")
+        self._appearance_btn = _flat_button(right, text=self._appearance_btn_text(),
+                                            width=96, command=self._cycle_appearance)
+        self._appearance_btn.pack(side="left", padx=(6, 0))
+        self._scale_btn = _flat_button(
+            right, text=self._scale_btn_text(), width=90, command=self._toggle_scale)
+        self._scale_btn.pack(side="left", padx=(6, 0))
+        _flat_button(right, text="保存配置", width=80,
+                     command=self._save_cfg).pack(side="left", padx=(6, 0))
+
+        self._log_box = ctk.CTkTextbox(parent, state="disabled", wrap="none", height=190)
+        # 展开时 grid 到 row=4（_toggle_log 控制），默认收起
+
+        # 「数据不出本地」是核心卖点，字号/颜色比作者署名这类次要信息更突出
+        footer = ctk.CTkFrame(parent, fg_color="transparent")
+        footer.grid(row=5, column=0, padx=22, pady=(2, 8), sticky="w")
+        ctk.CTkLabel(footer, text="🔒 数据仅在本机处理，不上传任何服务器",
+                     font=ctk.CTkFont(size=12, weight="bold"), text_color=C_OK).pack(anchor="w")
+        ctk.CTkLabel(footer, text="作者 AbeLin · MIT 开源",
+                     font=ctk.CTkFont(size=10), text_color="gray").pack(anchor="w", pady=(1, 0))
+
+    # ── 自适应 / 折叠 ───────────────────────────────────
+    def _update_input_ui(self):
+        """输入类型跟随路径自动推断：是文件夹才显示批量选项。"""
+        if os.path.isdir(self._input_var.get().strip()):
+            self._batch_frame.grid()
+        else:
+            self._batch_frame.grid_remove()
+
+    def _toggle_adv(self):
+        self._adv_open = not self._adv_open
+        if self._adv_open:
+            self._adv_frame.grid(row=3, column=0, padx=8, pady=(0, 10), sticky="ew")
+            self._adv_btn.configure(text="▾ 高级设置（一般用不到）")
+        else:
+            self._adv_frame.grid_remove()
+            self._adv_btn.configure(text="▸ 高级设置（一般用不到）")
+
+    def _log_btn_text(self):
+        """日志折叠钮文案：本轮有 ⚠ 提醒时带角标，把藏在折叠日志里的警告提到可见。"""
+        arrow = "▾" if self._log_open else "▸"
+        badge = f"（⚠ {self._warn_count}）" if self._warn_count else ""
+        return f"{arrow} 处理详情{badge}"
+
+    def _toggle_log(self, show=None):
+        show = (not self._log_open) if show is None else show
+        if show == self._log_open:
+            return
+        self._log_open = show
+        if show:
+            self._log_box.grid(row=4, column=0, padx=20, pady=(2, 0), sticky="ew")
+        else:
+            self._log_box.grid_remove()
+        self._log_btn.configure(text=self._log_btn_text())
+
+    def _on_header_mode(self, label):
+        if label == "指定行号":
+            self._hrow_frame.grid()
+            self._kw_frame.grid_remove()
+        elif label == "关键词":
+            self._hrow_frame.grid_remove()
+            self._kw_frame.grid()
+        else:
+            self._hrow_frame.grid_remove()
+            self._kw_frame.grid_remove()
+
+    # ── 选择输入 / 输出 ─────────────────────────────────
+    def _pick_file(self):
+        path = filedialog.askopenfilename(filetypes=[("Excel 文件", "*.xlsx *.xls")])
+        if path:
+            self._input_var.set(os.path.normpath(path))
+            self._after_pick()
+
+    def _pick_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self._input_var.set(os.path.normpath(path))
+            self._after_pick()
+
+    def _after_pick(self):
+        self._update_input_ui()
+        self._suggest_output()
+        self._scan_input()
+
+    def _on_path_edited(self):
+        """手动改路径框（回车/失焦）后同步界面；路径没变就什么都不做。"""
+        p = self._input_var.get().strip()
+        if p == self._scanned_path:
+            return
+        self._update_input_ui()
+        if p and os.path.exists(p):
+            self._suggest_output()
+            self._scan_input()
+        elif p:
+            self._scanned_path = p
+            self._set_in_status("⚠ 找不到这个路径，请检查有没有写错", C_WARN)
+
+    def _browse_output(self):
+        path = filedialog.askdirectory()
+        if path:
+            self._output_var.set(os.path.normpath(path))
+
+    @staticmethod
+    def _auto_output_for(p):
+        """输入路径对应的默认输出目录；无法推导时返回空串。
+
+        文件 → 同目录下「拆分结果」；文件夹 → 文件夹里面的「拆分结果」——结果永远出现在
+        用户数据旁边，找得到、不污染上层目录。放输入里面是安全的：run_split 递归扫描时
+        会整体跳过 output_root 子树（重复运行也不会把旧结果吃回去）。
+        """
+        if os.path.isdir(p):
+            return os.path.join(os.path.normpath(p), "拆分结果")
+        if os.path.isfile(p):
+            return os.path.join(os.path.dirname(p), "拆分结果")
+        return ""
+
+    def _suggest_output(self):
+        """按输入自动推荐输出目录；用户手动定过（当前值≠上次推荐值）就不再覆盖。"""
+        cur = self._output_var.get().strip()
+        if cur and cur != self._out_auto:
+            return
+        auto = self._auto_output_for(self._input_var.get().strip())
+        if auto:
+            self._output_var.set(auto)
+            self._out_auto = auto
+
+    # ── 扫描输入（文件数 + 字段），子线程执行 ───────────
+    def _scan_input(self):
+        p = self._input_var.get().strip()
+        self._scanned_path = p
+        if not p or not os.path.exists(p):
+            self._set_in_status(self._idle_input_text() if not p
+                                else "⚠ 找不到这个路径，请检查有没有写错",
+                                C_MUTED if not p else C_WARN)
+            return
+        is_dir = os.path.isdir(p)
+        self._set_in_status("正在读取…", C_MUTED)
+        self._set_scan_status("正在识别表格里的字段…", C_MUTED)
+        cfg = self._collect_config()
+        out_now = self._output_var.get().strip()
+
+        def work():
+            # 计数镜像 run_split 的规则：输出目录子树整体跳过（结果放在输入里时数字才对）
+            out_abs = os.path.normcase(os.path.abspath(out_now)) if out_now else None
+            tpl, n, total_bytes = None, 0, 0
+            if is_dir:
+                for root, dirs, files in os.walk(p):
+                    if out_abs:
+                        ra = os.path.normcase(os.path.abspath(root))
+                        if ra == out_abs or ra.startswith(out_abs + os.sep):
+                            dirs[:] = []
+                            continue
+                    dirs.sort()         # Linux 上 os.walk 不排序，样本表要和 Windows 挑同一个
+                    for fn in sorted(files):
+                        if fn.lower().endswith(('.xlsx', '.xls')) and not fn.startswith('~$'):
+                            n += 1
+                            try:
+                                total_bytes += os.path.getsize(os.path.join(root, fn))
+                            except OSError:
+                                pass
+                            if tpl is None:
+                                tpl = os.path.join(root, fn)
+            else:
+                tpl, n = p, 1
+                try:
+                    total_bytes = os.path.getsize(p)
+                except OSError:
+                    pass
+            cols = []
+            if tpl:
+                try:
+                    from core.splitter import list_columns
+                    cols = list_columns(tpl, cfg)
+                except Exception as e:
+                    # 不静默吞掉：扫描失败原因（文件被占用/损坏等）打进日志，
+                    # 否则界面只会显示笼统的「未能识别字段」，用户无从判断到底是
+                    # 真的表头识别不出来，还是文件被 Excel/网盘同步占用等其它原因。
+                    cols = []
+                    self._ui_q.put(("log", f"⚠ 扫描「{os.path.basename(tpl)}」失败：{e}"))
+            self._ui_q.put(("scan", (cols, n, os.path.basename(tpl) if tpl else "",
+                                     is_dir, p, tpl or "", total_bytes)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_scan(self, payload):
+        cols, n, tpl_name, is_dir, p, tpl_full, total_bytes = payload
+        if p != self._input_var.get().strip():
+            return    # 结果已过期（用户又换了输入）
+        self._tpl_path = tpl_full or None    # 取值枚举复用这份模板文件
+        # 本次扫描的规模先记下来：取值摘要要靠它说清「N 组来自 M 个表里的 1 个」，
+        # 「换样本表」也要沿用这些数字（它只换模板，不重新统计整个文件夹）
+        self._scan_n, self._scan_bytes, self._scan_is_dir = n, total_bytes, is_dir
+        self._tpl_is_sample = bool(is_dir and n > 1)
+        self._values_scope = "sample"
+        self._scan_all_token += 1            # 让进行中的全量扫描结果作废
+        if self._tpl_is_sample:
+            self._tpl_btn.pack(side="left", padx=(6, 0))
+        else:
+            self._tpl_btn.pack_forget()
+        # 换了输入，旧的取值预览随之作废
+        self._values_all, self._value_vars = [], {}
+        self._refresh_values_ui()
+        mb = total_bytes / 1048576
+        size_txt = f"，共 {mb:.0f} MB" if mb >= 1 else ""
+        heavy = "（量较大，预计需要几分钟）" if (n > 50 or mb > 200) else ""
+        name = os.path.basename(os.path.normpath(p)) or p
+        if is_dir and n == 0:
+            self._set_in_status(f"⚠ 文件夹「{name}」里没有找到 Excel 文件（.xlsx / .xls）", C_WARN)
+            self._set_scan_status("", C_MUTED)
+            return
+        if is_dir:
+            self._set_in_status(f"✓ 文件夹「{name}」：找到 {n} 个 Excel{size_txt}，全部一起拆{heavy}", C_OK)
+        else:
+            self._set_in_status(f"✓ 已选择：{name}{size_txt}{heavy}", C_OK)
+        self._on_columns(cols, tpl_name)
+
+    def _on_columns(self, cols, tpl_name=None):
+        self._columns = cols
+        if cols:
+            self._split_menu.configure(values=cols)
+            rec = self._recipe_active if (self._recipe_active or {}).get("mode") == "excel" else None
+            if self._split_var.get() not in cols and not (rec and rec["settings"].get("split_column")):
+                self._split_var.set(self._recommend_split(cols))
+            self._pcol_menu.configure(values=cols)
+            if self._pcol_var.get() not in cols and not (rec and rec["settings"].get("person_column")):
+                self._pcol_var.set(self._recommend_person(cols))
+            src = f"（来自「{tpl_name}」）" if tpl_name else ""
+            warns = []
+            if rec:
+                from core.recipe import check_columns
+                warns = check_columns(rec, cols)
+            if rec and warns:
+                self._set_scan_status("⚠ " + "；".join(warns) + "。请在下拉框里改选，或换一张表", C_WARN)
+                for w in warns:
+                    self._log(f"⚠️ 方案「{rec['name']}」：{w}")
+            else:
+                self._set_scan_status(f"✓ 识别到 {len(cols)} 个字段{src}，确认下拉框选的对不对", C_OK)
+            self._on_split_col_change(None)   # 字段已定 → 自动枚举取值（v2.7 取值预览）
+        else:
+            self._warn_scan_failed()
+
+    def _warn_scan_failed(self):
+        """扫描不到字段时的提示：「关键词」模式下关键词没匹配上是个常见且好定位的
+        原因（比如换了一批表头写法不同的表格，还留着上次填的旧关键词），单独
+        点名出来，比统一甩一句「未能识别字段」让用户少走弯路。"""
+        if self._header_seg.get() == "关键词":
+            kws = [k for k in (self._grid_keys_var.get().strip(), self._id_keys_var.get().strip()) if k]
+            if kws:
+                if not self._adv_open:
+                    self._toggle_adv()
+                self._set_scan_status(
+                    f"未能识别字段：当前「表头识别」用的是「关键词」模式，但表格前几行里"
+                    f"没找到关键词「{' / '.join(kws)}」——已展开下方「高级设置」，"
+                    f"核对这两个关键词是否适用于这份表格，或改回「自动」识别", C_WARN)
+                return
+        self._set_scan_status("未能识别字段：点「🔄 重新识别」重试，或到「高级设置」手动指定表头行", C_WARN)
+
+    @staticmethod
+    def _recommend_split(cols):
+        """猜一个最像「分组」的字段做默认值，猜不到就用第一个（用户仍需自己确认）。"""
+        for kw in ("部门", "网格", "区域", "分公司", "门店", "班组", "科室", "组织", "单位", "类别", "分类"):
+            for c in cols:
+                if kw in str(c):
+                    return c
+        return cols[0]
+
+    @staticmethod
+    def _recommend_person(cols):
+        for kw in ("姓名", "名字", "工号", "负责人", "经办"):
+            for c in cols:
+                if kw in str(c):
+                    return c
+        return cols[0]
+
+    def _find_stale_results(self, input_dir, output_root):
+        """输入文件夹里「不被本次输出目录覆盖」的历史拆分结果目录。
+
+        结果默认放在输入里面、由 run_split 按 output_root 跳过；但如果用户后来把输出
+        改到了别处，留在输入里的旧结果就会被当成数据拆一遍（静默重复）。开跑前找出来确认。
+        """
+        out = os.path.normcase(os.path.abspath(output_root))
+        hits = []
+        for root, dirs, _ in os.walk(input_dir):
+            for d in list(dirs):
+                full = os.path.normcase(os.path.abspath(os.path.join(root, d)))
+                if full == out or full.startswith(out + os.sep):
+                    dirs.remove(d)    # 本次输出覆盖的子树，run_split 会跳过，不算
+                    continue
+                if d == "拆分结果" or d.endswith("_拆分结果") or re.fullmatch(r"\d{8}结果(_\d+)?", d):
+                    hits.append(os.path.join(root, d))
+                    dirs.remove(d)    # 命中即整树算一个，不再往里翻
+        return hits
+
+    @staticmethod
+    def _find_open_locks(path, cap=4):
+        """检测输入里正被 Excel/WPS 打开的文件（存在同名锁文件）。
+
+        两种锁文件格式都认：Windows 的 `~$名字.xlsx`，和 Linux 版 WPS /
+        LibreOffice 的 `.~lock.名字.xlsx#`（见 platform_compat.lock_owner_name）——
+        只认前者的话，这条预警在麒麟上永远不会触发。
+
+        返回原文件名列表（最多 cap 个）；目录扫描限前 2000 个目录，防止巨型目录卡界面。
+        """
+        hits = []
+        if os.path.isfile(path):
+            d, base = os.path.dirname(path), os.path.basename(path)
+            if any(os.path.exists(os.path.join(d, cand))
+                   for cand in ("~$" + base, ".~lock." + base + "#")):
+                hits.append(base)
+            return hits
+        n_walk = 0
+        for _root, _dirs, files in os.walk(path):
+            n_walk += 1
+            if n_walk > 2000 or len(hits) >= cap:
+                break
+            names = {f for f in files if f.lower().endswith(('.xlsx', '.xls'))}
+            locked = {n for n in (lock_owner_name(f) for f in files) if n}
+            for f in sorted(locked & names):
+                hits.append(f)
+                if len(hits) >= cap:
+                    break
+        return hits
+
+    def _set_in_status(self, text, color=C_MUTED):
+        self._in_status.configure(text=text, text_color=color)
+
+    def _set_scan_status(self, text, color=C_MUTED):
+        self._status.configure(text=text, text_color=color)
+
+    # ── 配置收集 ───────────────────────────────────────
+    def _split_list(self, text):
+        return [k.strip() for k in text.split(",") if k.strip()]
+
+    def _parse_alias(self):
+        raw = self._alias_box.get("1.0", "end").strip()
+        if not raw:
+            return {}, True
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                return obj, True
+        except Exception:
+            pass
+        return {}, False
+
+    def _collect_config(self):
+        mode_map = {"自动": "auto", "指定行号": "row", "关键词": "keyword"}
+        try:
+            header_row = int(self._hrow_var.get())
+        except (TypeError, ValueError):
+            header_row = 1
+
+        split_col = "" if self._split_var.get() == COL_PLACEHOLDER else self._split_var.get()
+        pcol = "" if self._pcol_var.get() == COL_PLACEHOLDER else self._pcol_var.get()
+        alias, _ = self._parse_alias()
+
+        return {
+            "input_path":  self._input_var.get().strip(),
+            "output_path": self._output_var.get().strip(),
+            "ui_mode":     self._mode,
+            "pdf_input_paths": list(self._pdf_paths),
+            "pdf_mapping_path": self._pdf_map_var.get().strip(),
+            "pdf_grid_column": "" if self._pdfgrid_var.get() == PDF_COL_PLACEHOLDER else self._pdfgrid_var.get(),
+            "pdf_password_column": "" if self._pdfpwd_var.get() == PDF_COL_PLACEHOLDER else self._pdfpwd_var.get(),
+            "pdf_receiver_column": "",            # v2.10 起由 core 按列名自动认
+            "pdf_encrypt": self._pdfenc_var.get(),
+            "pdf_watermark": self._pdfwm_var.get(),
+            "pdf_watermark_text": self._pdfwmtext_var.get().strip() or "{grid} {date}",
+            "pdf_watermark_opacity": self.cfg.get("pdf_watermark_opacity", 0.15),
+            "pdf_watermark_angle": self.cfg.get("pdf_watermark_angle", 45),
+            "collect_input_path": self._col_in_var.get().strip(),
+            "collect_expect": self._col_expect_var.get().strip(),
+            "collect_required": self._col_req_var.get().strip(),
+            "collect_by": self._col_by_var.get().strip(),
+            "collect_title": self._col_title_var.get().strip(),
+            "collect_due": self._col_due_var.get().strip(),
+            "collect_record": self._col_rec_var.get().strip(),
+            "collect_check": self._col_check_var.get(),
+            "fill_columns": self._fill_var.get().strip(),
+            "due": self._due_var.get().strip(),
+            # 界面个性化键随每次保存透传，避免跑一次成功后丢失（与 pdf 水印参数同理）
+            "ui_scale": self.cfg.get("ui_scale", 100),
+            "window_geometry": self.cfg.get("window_geometry", ""),
+            "appearance_mode": self.cfg.get("appearance_mode", "system"),
+            "recent_recipes": self.cfg.get("recent_recipes", []),
+            "recipe_tip_off": self.cfg.get("recipe_tip_off", False),
+            "header_mode": mode_map.get(self._header_seg.get(), "auto"),
+            "header_row":  header_row,
+            "grid_keys":   self._split_list(self._grid_keys_var.get()),
+            "id_keys":     self._split_list(self._id_keys_var.get()),
+            "split_column": split_col,
+            "selected_values": self._split_list(self._selvals_var.get()),
+            "person_column": pcol,
+            "to_person":   self._person_var.get(),
+            "person_file_filter": self._split_list(self._pfilter_var.get()),
+            "value_alias_map": alias,
+            "skip_values": self._split_list(self._skip_var.get()),
+            "merge_across_files": self._merge_var.get(),
+            "make_zip":    self._zip_var.get(),
+            "exact_match": self._exact_var.get(),
+            "preserve_format": self._preserve_var.get(),
+            "keep_formulas": self._keep_formula_var.get(),
+            "keep_hidden": self._keep_hidden_var.get(),
+            "auto_open_output": self._auto_open_var.get(),
+        }
+
+    def _save_cfg(self):
+        try:
+            save_config(self._collect_config())
+            messagebox.showinfo("已保存", f"配置已保存到：\n{USER_CONFIG_PATH}\n下次启动自动加载。\n（每次成功拆分后也会自动记住当前配置）")
+        except Exception as e:
+            messagebox.showerror("保存失败", f"无法保存配置：{e}")
+
+    # ── 运行 ───────────────────────────────────────────
+    def _log(self, msg):
+        self._log_box.configure(state="normal")
+        self._log_box.insert("end", msg + "\n")
+        self._log_box.see("end")
+        self._log_box.configure(state="disabled")
+
+    def _stop_indeterminate(self):
+        """进度条从不定态动画切回真实进度模式。"""
+        if self._prog_indeterminate:
+            self._prog_indeterminate = False
+            self._progress.stop()
+            self._progress.configure(mode="determinate")
+
+    def _pump_ui(self):
+        """主线程 UI 泵：每 100ms 批量消费子线程消息（日志/进度/扫描/完成）。
+
+        子线程绝不直接碰 Tk 控件；日志批量合并插入，进度只取最新值——
+        避免高频 after(0) 回调打满主线程事件队列（大文件时界面假死的诱因之一）。
+        """
+        logs, progress = [], None
+        done: Any = _MISSING
+        scan: Any = _MISSING
+        pdf_scan: Any = _MISSING
+        values: Any = _MISSING
+        scanall: Any = _MISSING
+        scanall_prog: Any = _MISSING
+        col_scan: Any = _MISSING
+        try:
+            while True:
+                kind, payload = self._ui_q.get_nowait()
+                if kind == "log":
+                    logs.append(payload)
+                elif kind == "progress":
+                    progress = payload
+                elif kind == "done":
+                    done = payload
+                elif kind == "scan":
+                    scan = payload
+                elif kind == "pdf_scan":
+                    pdf_scan = payload
+                elif kind == "values":
+                    values = payload
+                elif kind == "scanall":
+                    scanall = payload
+                elif kind == "scanall_prog":
+                    scanall_prog = payload
+                elif kind == "collect_scan":
+                    col_scan = payload
+        except queue.Empty:
+            pass
+        if logs:
+            # [SUMMARY] 机器可读行不直接展示：提取出来供完成摘要渲染（v2.7）；
+            # 提取失败也不报错，退回原有纯日志行为
+            out_lines = []
+            for payload in logs:
+                for line in str(payload).splitlines():
+                    if line.startswith("[SUMMARY] "):
+                        try:
+                            self._last_summary = json.loads(line[len("[SUMMARY] "):])
+                        except Exception:
+                            pass
+                        continue
+                    if "⚠" in line:
+                        self._warn_count += 1
+                    out_lines.append(line)
+            if out_lines:
+                joined = "\n".join(out_lines)
+                self._log(joined)
+                if self._running:
+                    # 状态行镜像最新一条日志：不展开「处理详情」也能看到进展
+                    last = next((ln.strip() for ln in reversed(joined.splitlines()) if ln.strip()), "")
+                    if last:
+                        self._run_status.configure(text=("⏳ " + last)[:70], text_color=C_MUTED)
+        if progress is not None:
+            self._stop_indeterminate()
+            self._progress.set(progress)
+        if scan is not _MISSING:
+            self._on_scan(scan)
+        if pdf_scan is not _MISSING:
+            self._on_pdf_scan(pdf_scan)
+        if values is not _MISSING:
+            self._on_values(values)
+        if scanall_prog is not _MISSING:
+            self._on_scan_all_prog(scanall_prog)
+        if scanall is not _MISSING:
+            self._on_scan_all(scanall)
+        if col_scan is not _MISSING:
+            self._on_collect_scan(col_scan)
+        if done is not _MISSING:
+            self._on_done(*done)
+        self.after(100, self._pump_ui)
+
+    def _enter_running(self, busy_text, first_log):
+        """进入运行态的公共 UI 准备：两种模式共用（按钮/进度/日志/状态行）。"""
+        self._stop_flag = False
+        self._running = True
+        self._last_output = None
+        self._warn_count = 0
+        self._last_summary = None
+        self._summary_lbl.configure(text="")
+        self._summary_banner.grid_remove()
+        self._recipe_tip.grid_remove()
+        self._copylog_btn.grid_remove()
+        self._log_btn.configure(text=self._log_btn_text())
+        self._start_btn.configure(state="disabled", text=busy_text)
+        self._stop_btn.grid()
+        self._stop_btn.configure(state="normal")
+        self._open_btn.grid_remove()
+        self._log_box.configure(state="normal")
+        self._log_box.delete("1.0", "end")
+        self._log_box.configure(state="disabled")
+        # 点击的瞬间就要看到反馈：先用不定态动画，第一条真实进度回来后自动切换（见 _pump_ui）
+        self._prog_indeterminate = True
+        self._progress.configure(mode="indeterminate")
+        self._progress.start()
+        self._run_status.configure(text=first_log, text_color=C_MUTED)
+        self._log("▶ " + first_log)
+
+    def _start_pdf(self):
+        cfg = self._collect_config()
+        if not cfg["pdf_input_paths"]:
+            messagebox.showwarning("先选择文件", "请先在第 ① 步选择要分发的文件。")
+            return
+        missing = [p for p in cfg["pdf_input_paths"] if not os.path.exists(p)]
+        if missing:
+            messagebox.showwarning("文件不存在", "以下文件找不到了，请重新选择：\n" + "\n".join(missing[:3]))
+            return
+        if not cfg["pdf_encrypt"] and not any(p.lower().endswith(".pdf") for p in cfg["pdf_input_paths"]):
+            messagebox.showwarning("没有能加水印的文件",
+                                   "只加水印时只能处理 PDF；Word / Excel / PPT 只能加密。\n"
+                                   "请勾上「加打开密码」，或先把文件转成 PDF。")
+            return
+        if not cfg["pdf_mapping_path"] or not os.path.exists(cfg["pdf_mapping_path"]):
+            messagebox.showwarning("先选择映射清单", "请在第 ② 步选择列出各网格的 Excel 映射清单。")
+            return
+        if not cfg["pdf_grid_column"]:
+            messagebox.showwarning("先选择网格列", "请在第 ② 步选好「网格列」。\n如果下拉框没有内容，重新选一次映射清单。")
+            return
+        if cfg["pdf_encrypt"] and not cfg["pdf_password_column"]:
+            # 没选密码列 → 提供自动生成随机密码（C2），另存新清单不改动原文件
+            if not messagebox.askyesno("自动生成密码？",
+                                       "没有选择密码列。要我为每个网格自动生成随机密码，\n"
+                                       "另存一份「含密码」清单并继续分发吗？\n（8 位随机密码只存在清单里，丢失无法找回）"):
+                return
+            try:
+                from core.pdf_dist import fill_random_passwords
+                out_path, npwd = fill_random_passwords(cfg["pdf_mapping_path"],
+                                                       cfg["pdf_grid_column"])
+            except Exception as e:
+                messagebox.showerror("生成失败", f"自动生成密码失败：{e}")
+                return
+            cfg["pdf_mapping_path"] = out_path
+            cfg["pdf_password_column"] = "密码"
+            self._pdf_map_var.set(out_path)
+            self._pdfpwd_var.set("密码")
+            self._pdf_map_status.configure(
+                text=f"🔑 已为 {npwd} 个网格生成随机密码 → {os.path.basename(out_path)}（含明文，保管好）",
+                text_color=C_OK)
+        if not cfg["output_path"]:
+            self._suggest_pdf_output()
+            cfg["output_path"] = self._output_var.get().strip()
+        if not cfg["output_path"]:
+            messagebox.showwarning("先选择保存位置", "请在第 ③ 步选择结果保存到哪个文件夹。")
+            return
+        try:
+            os.makedirs(cfg["output_path"], exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("无法创建保存位置",
+                                 f"没法在这里创建结果文件夹：\n{cfg['output_path']}\n\n{e}\n\n"
+                                 "请点「浏览」换一个能写入的位置（比如桌面或文档）。")
+            return
+
+        self._enter_running("⏳ 正在分发…", "已开始，正在读取映射清单…")
+
+        def run():
+            try:
+                from core.pdf_dist import run_pdf_dist
+                output_path = run_pdf_dist(
+                    cfg,
+                    log_fn=lambda m: self._ui_q.put(("log", m)),
+                    progress_fn=lambda v: self._ui_q.put(("progress", v)),
+                    stop_flag=lambda: self._stop_flag,
+                )
+            except Exception as e:
+                self._ui_q.put(("log", f"\n❌ 运行出错：{e}"))
+                output_path = None
+            self._ui_q.put(("done", (cfg, output_path)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _start(self):
+        if self._mode == "pdf":
+            return self._start_pdf()
+        if self._mode == "collect":
+            return self._start_collect("check" if self._col_check_var.get() else "merge")
+        cfg = self._collect_config()
+        if not cfg["input_path"] or not os.path.exists(cfg["input_path"]):
+            messagebox.showwarning("先选择表格", "请先在第 ① 步选择要拆的 Excel 文件或文件夹。")
+            return
+        if not cfg["split_column"]:
+            messagebox.showwarning("先选择拆分字段",
+                                   "请在第 ② 步选择「拆分字段」——按哪一列拆分。\n如果下拉框还没有内容，点「🔄 扫描字段」。")
+            return
+        if not cfg["output_path"]:
+            self._suggest_output()
+            cfg["output_path"] = self._output_var.get().strip()
+        if not cfg["output_path"]:
+            messagebox.showwarning("先选择保存位置", "请在第 ③ 步选择结果保存到哪个文件夹。")
+            return
+        # 输出目录若等于输入文件夹本身或在它上层，核心扫描时会把全部文件当输出跳过 → 提前拦住
+        if os.path.isdir(cfg["input_path"]):
+            try:
+                inp = os.path.normcase(os.path.abspath(cfg["input_path"]))
+                out = os.path.normcase(os.path.abspath(cfg["output_path"]))
+                if inp == out or inp.startswith(out + os.sep):
+                    messagebox.showwarning("换个保存位置",
+                                           "结果保存位置不能选输入文件夹自己或它的上层文件夹，\n否则找不到要拆的文件。建议直接用自动推荐的位置。")
+                    return
+            except Exception:
+                pass
+            # 输入里有历史拆分结果、而本次输出没盖住它 → 会被当数据重复拆，先问一声
+            try:
+                stale = self._find_stale_results(cfg["input_path"], cfg["output_path"])
+            except Exception:
+                stale = []
+            if stale:
+                shown = "\n".join(stale[:3]) + ("\n…" if len(stale) > 3 else "")
+                if not messagebox.askyesno(
+                        "发现以前的拆分结果",
+                        f"输入文件夹里有以前拆出来的结果：\n{shown}\n\n"
+                        "这次运行会把里面的文件也当成数据一起拆，内容可能重复。\n"
+                        "建议先把它们移走/删除，或把保存位置改回默认。\n\n仍要继续吗？"):
+                    return
+        # ★ 抽样提醒（v2.9）：②里的「N 组」只来自一个样本表，而这一跑是对全部
+        # 文件生效的——不筛选取值时真实分组数几乎总是更多。让用户在这里就知道，
+        # 而不是跑完 20 分钟看到 29 个分组才发现和预览的 6 组不是一回事。
+        if (self._tpl_is_sample and self._values_scope != "all"
+                and not cfg["selected_values"] and self._values_all):
+            ans = messagebox.askyesnocancel(
+                "分组数可能比预览的多",
+                f"第 ② 步显示的 {len(self._values_all)} 个分组只来自样本表"
+                f"「{os.path.basename(self._tpl_path or '')}」，\n"
+                f"这次要拆的是全部 {self._scan_n} 个表，其他表里可能还有别的分组，"
+                "实际拆出的会更多。\n\n"
+                "· 「是」＝照这样拆全部分组\n"
+                "· 「否」＝先读遍所有表列全分组，我再勾选要哪几个\n"
+                "· 「取消」＝什么都不做")
+            if ans is None:
+                return
+            if not ans:
+                self._scan_all_values()
+                return
+        # 误选保护（A1）：取值预览发现分组异常多时，开跑前再确认一次
+        if len(self._values_all) > 50:
+            if not messagebox.askyesno(
+                    "分组特别多",
+                    f"将按「{cfg['split_column']}」拆出 {len(self._values_all)} 个分组（文件）。\n"
+                    "取值异常多常见于选错了字段（比如选到工号 / 姓名列）。\n\n仍要继续吗？"):
+                return
+        # 占用预检（B2）：输入里被 Excel/WPS 打开的文件（~$ 锁），读到的是未保存的旧内容
+        locks = self._find_open_locks(cfg["input_path"])
+        if locks:
+            shown = "、".join(locks[:3]) + (" 等" if len(locks) > 3 else "")
+            if not messagebox.askyesno(
+                    "文件正被打开",
+                    f"检测到以下文件正被 Excel/WPS 打开：{shown}\n"
+                    "拆分读到的是「打开前保存的内容」，刚改的数不会生效。\n\n建议先关闭这些文件。仍要继续吗？"):
+                return
+        # 保存位置提前建好：位置只读/无权限时现在就报，而不是跑到一半失败
+        try:
+            os.makedirs(cfg["output_path"], exist_ok=True)
+        except OSError as e:
+            messagebox.showerror("无法创建保存位置",
+                                 f"没法在这里创建结果文件夹：\n{cfg['output_path']}\n\n{e}\n\n"
+                                 "请点「浏览」换一个能写入的位置（比如桌面或文档）。")
+            return
+        _, alias_ok = self._parse_alias()
+        if not alias_ok:
+            messagebox.showwarning("高级设置有误", "「高级设置 → 取值归并映射」不是合法 JSON，请修正或清空。")
+            return
+
+        self._enter_running("⏳ 正在拆分…", "已开始，正在扫描输入…")
+
+        def run():
+            try:
+                from core.splitter import run_split
+                output_path = run_split(
+                    cfg,
+                    log_fn=lambda m: self._ui_q.put(("log", m)),
+                    progress_fn=lambda v: self._ui_q.put(("progress", v)),
+                    stop_flag=lambda: self._stop_flag,
+                )
+            except Exception as e:
+                self._ui_q.put(("log", f"\n❌ 运行出错：{e}"))
+                output_path = None
+            self._ui_q.put(("done", (cfg, output_path)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _stop(self):
+        self._stop_flag = True
+        self._log("正在停止，请等待当前文件处理完成...")
+
+    def _copy_log(self):
+        """把日志全文复制进剪贴板，方便粘贴到反馈问卷或发给维护者。"""
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._log_box.get("1.0", "end").strip())
+            self._run_status.configure(text="📋 日志已复制，可直接粘贴到反馈问卷", text_color=C_OK)
+        except Exception:
+            pass
+
+    def _appearance_btn_text(self):
+        return {"system": "🌓 跟随系统", "light": "☀️ 浅色", "dark": "🌙 深色"}.get(
+            self.cfg.get("appearance_mode", "system"), "🌓 跟随系统")
+
+    def _cycle_appearance(self):
+        """深浅色循环切换：系统 → 浅色 → 深色 → 系统；即时生效并持久化。"""
+        order = ["system", "light", "dark"]
+        cur = self.cfg.get("appearance_mode", "system")
+        new = order[(order.index(cur) + 1) % len(order)]
+        self.cfg["appearance_mode"] = new
+        ctk.set_appearance_mode(new if new != "system" else "System")
+        self._appearance_btn.configure(text=self._appearance_btn_text())
+        try:
+            save_config(self._collect_config())
+        except Exception as e:
+            messagebox.showerror("保存失败", f"无法保存外观设置：{e}")
+
+    def _scale_btn_text(self):
+        return "🔍 标准字号" if self.cfg.get("ui_scale", 100) != 100 else "🔍 大字号"
+
+    def _toggle_scale(self):
+        """大字号即时切换（v2.7.1 改）：set_widget_scaling 对已建控件即时生效，
+        点了立刻看到变大/复原；115% 在当前布局余量内，无需重建界面。"""
+        new = 100 if self.cfg.get("ui_scale", 100) != 100 else 115
+        self.cfg["ui_scale"] = new
+        ctk.set_widget_scaling(new / 100)
+        self._scale_btn.configure(text=self._scale_btn_text())
+        try:
+            save_config(self._collect_config() | {"ui_scale": new})
+        except Exception as e:
+            messagebox.showerror("保存失败", f"无法保存设置：{e}")
+
+    def _open_feedback(self):
+        """打开匿名反馈页；顺手把版本号复制进剪贴板，方便用户粘贴到问卷。"""
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(f"ExcelRouter v{APP_VERSION}")
+        except Exception:
+            pass
+        webbrowser.open(FEEDBACK_URL)
+        self._log("💬 已打开反馈页，版本号已复制到剪贴板，粘贴到问卷即可。")
+
+    def _open_output(self):
+        path = self._last_output or self._output_var.get().strip()
+        if not path:
+            return
+        if not os.path.exists(path):
+            self._run_status.configure(text=f"⚠ 这个目录不在了：{path}", text_color=C_WARN)
+            return
+        if not open_folder(path):
+            # 旧实现失败时悄无声息：用户点了按钮什么也没发生，比报错更让人困惑
+            self._run_status.configure(text=f"⚠ 打不开文件管理器，结果就在：{path}",
+                                       text_color=C_WARN)
+            self._log(f"⚠ 无法调起文件管理器，请手动打开：{path}")
+
+    def _render_summary(self, output_path, is_pdf):
+        """完成摘要（A4）：用 core 收尾的 [SUMMARY] 渲染多行结果概览。
+
+        摘要行是文本契约（[SUMMARY] + JSON），解析失败/缺字段时逐字段容错，
+        哪项拿不到就不显示哪项，绝不影响完成提示本身。
+        """
+        s = self._last_summary or {}
+        lines, has_warn = [], False
+        if is_pdf:
+            if s.get("grids_ok") is not None:
+                t = f"📊 {s['grids_ok']} 个网格成功"
+                if s.get("grids_fail"):
+                    t += f"，{s['grids_fail']} 个失败（详见处理详情）"
+                    has_warn = True
+                if s.get("files"):
+                    t += f"，共 {s['files']} 份副本"
+                lines.append(t)
+                if s.get("encrypt", True):
+                    lines.append("🔒 分发清单含明文密码，只留给自己用，勿随文件一起发出去")
+        else:
+            if s.get("groups") is not None:
+                t = f"📊 拆出 {s['groups']} 个分组 · {s.get('files', '?')} 个文件 · {s.get('rows', '?')} 行"
+                if s.get("zips"):
+                    t += f" · {s['zips']} 个 ZIP"
+                lines.append(t)
+                bad = [f"{s[k]} 个{lab}" for k, lab in
+                       (("skipped_sheets", "sheet 被跳过"), ("failed_files", "文件读取失败"),
+                        ("failed_saves", "文件保存失败")) if s.get(k)]
+                if bad:
+                    lines.append("⚠ " + "，".join(bad) + "（点「处理详情」看原因）")
+                    has_warn = True
+                # v3.0：行数对账——源表每一行去哪了，一眼对得上
+                if s.get("source_rows") and not s.get("stopped"):
+                    parts = [f"拆出 {s.get('routed', 0)}"] + [
+                        f"{lab} {s[k]}" for k, lab in (("skip_rows", "合计等"), ("not_selected", "没选的分组"))
+                        if s.get(k)]
+                    if s.get("unassigned"):
+                        parts.append(f"没写分组 {s['unassigned']}（见「请核对_无归属.xlsx」）")
+                        has_warn = True
+                    lines.append(f"🧮 源表 {s['source_rows']} 行 = " + " + ".join(parts))
+                if s.get("hidden_sheets") or s.get("hidden_cols"):
+                    if self._keep_hidden_var.get():
+                        lines.append("🙈 隐藏的 sheet / 列照样发出了（高级设置里勾选了「隐藏的也照样发出」）")
+                    else:
+                        hid = [f"{s[k]} 个{lab}" for k, lab in
+                               (("hidden_sheets", "隐藏 sheet 没发"), ("hidden_cols", "隐藏列的内容已清空")) if s.get(k)]
+                        lines.append("🙈 " + "，".join(hid) + "（要一起发，在高级设置里勾选）")
+                if s.get("hidden_rows"):
+                    lines.append(f"ℹ️ 有 {s['hidden_rows']} 行原来是隐藏的（可能是筛选掉的），照常发出了")
+                if s.get("templates"):
+                    t = f"📋 这批表其实是 {s['templates']} 种模板，跨文件合并已按列名对齐"
+                    if s.get("unaligned"):
+                        t += f"；{s['unaligned']} 个 sheet 列名大半对不上，单独放进了「sheet 名_2」"
+                        has_warn = True
+                    lines.append(t)
+                if s.get("groups") == 1 and not s.get("stopped") and not self._split_list(self._selvals_var.get()):
+                    lines.append("⚠ 只拆出 1 组：每一行的拆分字段都一样，可能选错了字段")
+                    has_warn = True
+                if s.get("issued"):
+                    lines.append("✍️ 已标出填写列并写了下发记录；收回来后切到「Excel 汇总」，选回收文件夹点「查收」"
+                             "（下发记录已自动带上）")
+        if self._warn_count:
+            self._log_btn.configure(text=self._log_btn_text())
+        lines.append(f"📁 {output_path}")
+        self._summary_lbl.configure(text="\n".join(lines))
+        # 有跳过/失败时横幅退回中性底色，避免「绿底＋橙字」的违和
+        self._summary_banner.configure(
+            fg_color=("gray90", "gray20") if has_warn else OK_BANNER_BG)
+        self._summary_lbl.configure(text_color=C_WARN if has_warn else C_OK)
+        self._summary_banner.grid()
+
+    def _on_done(self, cfg, output_path):
+        self._running = False
+        is_pdf = cfg.get("ui_mode") == "pdf"
+        self._start_btn.configure(state="normal", text=self._start_text())
+        self._stop_btn.grid_remove()
+        self._stop_indeterminate()
+        self._progress.set(1 if output_path else 0)
+        if cfg.get("ui_mode") == "collect":
+            self._on_collect_done(cfg, output_path)
+            if output_path and not self._stop_flag:
+                self._offer_recipe(cfg)
+            return
+        if output_path:
+            self._last_output = output_path
+            self._open_btn.grid()
+            if self._stop_flag:
+                self._run_status.configure(text="⏹ 已停止：处理完的部分已保存，可点「打开输出文件夹」查看",
+                                           text_color=C_WARN)
+            else:
+                self._run_status.configure(text="✅ 分发完成！结果已保存" if is_pdf else "✅ 拆分完成！结果已保存",
+                                           text_color=C_OK)
+                self._log("💬 用得顺手或踩了坑？点「反馈建议」匿名告诉作者（1 分钟）。")
+                self._offer_recipe(cfg)
+            self._render_summary(output_path, is_pdf)
+            from core.collect import RECORD_NAME
+            rec = os.path.join(output_path, RECORD_NAME)
+            if not is_pdf and cfg.get("fill_columns") and os.path.isfile(rec):
+                # 刚下发的这一批：Excel 汇总直接打开查收、用它的下发记录，不用再去②里找。
+                # 上一批手填的名单 / 必填列 / 标题属于上一批，清掉，否则会盖过这份记录
+                self._col_rec_var.set(rec)
+                self._col_check_var.set(True)
+                for var, key in ((self._col_expect_var, "collect_expect"), (self._col_req_var, "collect_required"),
+                                 (self._col_title_var, "collect_title")):
+                    var.set("")
+                    cfg[key] = ""
+                self._col_form.grid()
+                self._col_scanned = None
+                cfg.update(collect_record=rec, collect_check=True)
+                if cfg.get("due") and not self._col_due_var.get().strip():
+                    self._col_due_var.set(cfg["due"])
+                    cfg["collect_due"] = cfg["due"]
+            try:
+                save_config(cfg)      # 静默记住本次配置：下次打开即用（失败运行不存，避免存坏参数）
+            except Exception:
+                pass
+        else:
+            if self._warn_count:
+                self._log_btn.configure(text=self._log_btn_text())
+            self._run_status.configure(
+                text="❌ 没有完成：原因见下方「处理详情」；可点「复制日志」连同反馈一起发给作者",
+                text_color=C_ERR)
+            self._copylog_btn.grid()
+            self._toggle_log(show=True)
+        if cfg.get("auto_open_output") and output_path and os.path.exists(output_path):
+            # 只记日志、不改状态行：完成横幅已经显示了 📁 输出路径，
+            # 绿色横幅旁边再挂个黄警告是噪音。
+            if not open_folder(output_path):
+                self._log(f"ℹ 没能自动打开输出文件夹，结果在：{output_path}")
+
+
+def run():
+    app = App()
+    app.mainloop()

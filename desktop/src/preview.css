@@ -1,0 +1,29 @@
+/* Copyright (c) 2026 AbeLin · MIT License */
+.preview-tools { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.preview-zoom { display: flex; align-items: center; gap: 1px; border: 1px solid #e3e9e4; border-radius: 5px; overflow: hidden; }
+.preview-zoom button { border: 0; background: #fff; height: 27px; min-width: 26px; padding: 0 5px; display: flex; align-items: center; justify-content: center; color: #607366; font-size: 11px; }
+.preview-zoom button:nth-child(2) { min-width: 42px; font-variant-numeric: tabular-nums; }
+.preview-zoom button:hover:not(:disabled), .preview-expand:hover { background: #eef5f0; }
+.preview-expand { display: flex; align-items: center; gap: 5px; background: none; border: 0; border-radius: 4px; color: #427559; font-size: 11px; padding: 6px; white-space: nowrap; }
+.sheet-viewport { position: relative; isolation: isolate; height: 420px; min-width: 0; max-width: 100%; overflow: auto; background: #f3f5f4; outline-offset: -2px; }
+.sheet-grid { table-layout: fixed; border-collapse: collapse; border-spacing: 0; background: #fff; color: #000; font-family: Calibri, 'Microsoft YaHei', sans-serif; font-size: 14.6667px; line-height: normal; font-weight: normal; }
+.sheet-grid th, .sheet-grid td { padding: 0; border: 1px solid #dfe4e1; }
+.sheet-grid thead th { position: sticky; top: 0; z-index: 3; height: 25px; background: #f1f4f2; color: #66756c; text-align: center; font: 11px/24px 'Segoe UI', sans-serif; box-shadow: 0 1px 0 #d2dcd5; }
+.sheet-grid .sheet-row-number { position: sticky; left: 0; z-index: 2; padding: 0; background: #f1f4f2; color: #738279; text-align: center; font: 11px/1 'Segoe UI', sans-serif; box-shadow: 1px 0 0 #d2dcd5; }
+.sheet-grid .sheet-corner { left: 0; z-index: 4; }
+.sheet-cell { position: relative; overflow: hidden; font-weight: normal; }
+.sheet-cell-box { position: absolute; inset: 0; display: flex; overflow: hidden; padding: 0 3px; }
+.sheet-cell-box > span { display: block; width: 100%; flex-shrink: 0; }
+.sheet-grid.without-gridlines td { border-color: transparent; }
+.preview-notes { padding: 9px 20px; display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--line); color: #819387; font-size: 10px; line-height: 1.6; }
+.preview-warning { color: #a07a44; }
+.preview-dialog { padding: 0; width: calc(100vw - 64px); max-width: 1600px; height: calc(100vh - 64px); max-height: none; border: 1px solid #d7e2da; border-radius: 12px; background: #fff; box-shadow: 0 25px 100px #17302544; color: var(--ink); }
+.preview-dialog[open] { display: flex; flex-direction: column; }
+.preview-dialog::backdrop { background: #18372866; backdrop-filter: blur(3px); }
+.preview-dialog-heading { flex-shrink: 0; padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 20px; }
+.preview-dialog-heading > div:first-child { display: flex; align-items: center; gap: 10px; min-width: 0; color: #427559; }
+.preview-dialog-heading strong { font-size: 14px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.preview-dialog-heading span { font-size: 11px; color: #96a49b; white-space: nowrap; }
+.preview-dialog .sheet-viewport { flex: 1; height: auto; min-height: 0; }
+.preview-dialog .preview-notes { flex-shrink: 0; max-height: 100px; overflow-y: auto; }
+@media (max-width: 1190px) { .preview-tools { gap: 3px; } .preview-tabbar { padding-left: 12px; padding-right: 12px; } .preview-expand { gap: 4px; font-size: 10px; } }

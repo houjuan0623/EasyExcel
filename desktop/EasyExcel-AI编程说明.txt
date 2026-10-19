@@ -1,0 +1,212 @@
+EasyExcel 离线 Python 编程说明（可直接发给 AI）
+适用软件：EasyExcel 0.3.1，Windows x64 免安装版
+清单依据：当前免安装包中的“resources/backend/离线依赖清单.json”和工作台实际接口。
+
+请阅读以下运行环境和接口约束，再根据文末“本次需求”生成代码。
+
+一、运行方式
+
+你要编写的是在 EasyExcel“Python 工作台”中运行的单个 UTF-8 编码 .py 脚本。
+用户已经在界面选择 Excel 文件或文件夹，并勾选了需要处理的 Sheet。Python 已经将这些表读入内存。
+Python 版本：3.12.14。每次运行都是独立的新进程，不能依赖上次运行留下的变量。
+目标电脑没有网络，也不需要另装 Python。只使用下面列出的第三方库和常用标准库。
+不要提供 pip / conda 安装命令，不要下载数据、调用网络 API、启动其他 Python 解释器或依赖外部命令。
+不要使用 Jupyter、IPython、浏览器界面、桌面 GUI、交互式 input() 或命令行参数输入。
+所有可调参数集中写在脚本开头，并配中文注释。
+
+二、已打包的主要第三方库：版本、用途、导入方式
+
+1. pandas 3.0.1
+   用途：表格清洗、字段转换、筛选、分组汇总、透视表、对账、关联和数据分析。
+   导入：import pandas as pd
+   工作台已提供 pd；输入表格都是 pandas.DataFrame。
+
+2. numpy 2.3.5
+   用途：数组运算、数值计算、向量化处理。
+   导入：import numpy as np
+   工作台已提供 np。
+
+3. matplotlib 3.11.2
+   用途：折线图、柱状图、散点图、饼图等静态图表，输出 PNG。
+   导入：import matplotlib.pyplot as plt
+   工作台已提供 plt，并使用 Agg 后端及本机可用中文字体；不要切换 GUI 后端。
+
+4. openpyxl 3.1.5
+   用途：读取、创建、修改 .xlsx，设置单元格样式、格式、公式、合并单元格等。
+   导入：import openpyxl
+   写入公式不等于计算公式；库和工作台均不提供 Excel 公式重算引擎。
+
+5. xlrd 2.0.2
+   用途：读取旧格式 .xls 工作簿。
+   导入：import xlrd
+   .xlsx 使用 openpyxl，不要交给 xlrd。
+
+6. numpy-financial 1.0.0
+   用途：NPV、IRR、现值、终值、贷款月供、本金、利息等规则期间现金流计算。
+   导入：import numpy_financial as npf
+   工作台已提供 npf。注意安装名中的连字符与导入名中的下划线不同。
+
+7. pyxirr 0.10.8
+   用途：按实际日期计算 XIRR、XNPV 等不规则现金流指标。
+   导入：import pyxirr
+   日期、金额、现金流方向必须来自用户给定的数据和口径。
+
+8. scipy 1.18.1
+   用途：统计分布与检验、拟合、数值求解和优化。
+   常用导入：from scipy import stats, optimize
+   可按需要使用 scipy.special 等已收集模块；不要依赖未安装的可选扩展。
+
+9. statsmodels 0.15.0
+   用途：回归分析、统计建模、时间序列分析和预测。
+   导入：import statsmodels.api as sm
+   公式接口：import statsmodels.formula.api as smf
+   已验证示例路径：from statsmodels.tsa.holtwinters import ExponentialSmoothing
+   拟合或预测前要检查样本数量、缺失值、时间顺序及模型假设。
+
+10. seaborn 0.13.2
+    用途：分布、分组比较、相关性热力图等统计图表。
+    导入：import seaborn as sns
+    使用 matplotlib 的 Figure/Axes，并通过工作台的 save_figure 保存结果。
+
+11. XlsxWriter 3.2.9
+    用途：创建带金额格式、公式和 Excel 内嵌图表的新 .xlsx 财务报表。
+    导入：import xlsxwriter
+    或使用：pd.ExcelWriter(OUTPUT_DIR / "财务报表.xlsx", engine="xlsxwriter")
+    它用于新建报表；修改已有工作簿使用 openpyxl。写入的公式不在工作台内重算。
+
+12. Babel 2.18.0
+    用途：按语言区域格式化金额、币种和数字。
+    导入：from babel.numbers import format_currency, format_decimal
+    金额格式化不代表自动换汇；汇率必须由本地数据或参数提供。
+
+13. QuantLib 1.44
+    用途：计息日历、日计数规则、现金流、债券、利率曲线与金融估值。
+    导入：import QuantLib as ql
+    估值日期、日计数规则、结算规则、利率和其他市场数据由本地数据或参数提供，不要自行假定。
+
+以上是建议脚本直接使用的主要库。包内还有它们的运行依赖，但不要因此假定所有其他第三方库、插件或可选后端都存在。
+不要擅自引入 scikit-learn、plotly、akshare、yfinance、requests、PyQt、tkinter 等清单外或不适用的组件。
+如果需求无法用本清单完成，先说明缺少的能力，不要输出依赖未安装模块的代码。
+
+三、标准库
+
+可使用 json、csv、math、statistics、datetime、pathlib、re、collections、itertools、functools、random、decimal、fractions、sqlite3 等常用标准库。
+decimal 是 Python 内置模块，不是额外安装的第三方库：
+    from decimal import Decimal, ROUND_HALF_UP
+精确金额计算采用 Decimal(str(value)) 或 Decimal("1.23")，并明确舍入规则；不要使用 Decimal(float) 来构造精确金额。
+这是 PyInstaller 打包环境，不能假定所有未列出的标准库模块或外部工具均可用。
+
+四、工作台已经提供的变量
+
+df
+    第一个勾选 Sheet 的 pandas.DataFrame。单表任务通常从 data = df.copy() 开始。
+
+tables
+    包含全部勾选 Sheet 的字典：{ "文件相对路径 / Sheet名": DataFrame }。
+    例如：tables["销售明细.xlsx / 9月明细"]。
+    使用实际键名，不要凭空编造键名；如需按规则选表，先检查 list(tables.keys())，匹配不唯一时明确报错。
+
+inputs
+    各表输入信息的列表，每项为：
+    {key, path, sheet, headerRow, rows, columns}
+    key：对应 tables 的键；path：原文件路径；sheet：Sheet 名；headerRow：从 1 开始的表头行号；rows：已读入的数据行数；columns：实际字段名称列表。
+
+pd / np / plt / npf / Decimal
+    分别是 pandas、numpy、matplotlib.pyplot、numpy_financial 和 decimal.Decimal。
+    可直接使用，也可按上面的导入方式显式导入。其他库按需 import，不要无关地全部导入。
+
+OUTPUT_DIR
+    本次运行独立结果目录的 pathlib.Path；脚本运行时的当前工作目录也是这里。
+    自行导出文件时使用 OUTPUT_DIR / "文件名.xlsx" 等路径。
+    不要硬编码开发机或用户电脑上的 C:\、D:\ 路径，不要覆盖、移动或删除原 Excel 文件。
+
+五、输入数据规则
+
+1. 读取的是所选 Sheet 表头以下的完整数据；界面的“前 100 行预览”不会把 df 或 tables 限制为 100 行。
+2. 隐藏 Sheet 不参与，隐藏列不载入，隐藏行保留；合计行、小计行不会自动剔除。
+3. Excel 公式使用文件已保存的缓存值，不执行公式重算；缺少缓存时要检查缺失值。
+4. pandas 默认推断类型和空值。编号前导零、日期、百分比、金额单位与合并表头需要结合实际数据处理。
+5. 字段检查以 df.columns、tables 中实际 DataFrame 的列名及 inputs 为准，不能只假设界面预览中的标题就是字段名。
+6. 不要静默把无法解析的金额变成 0、丢弃异常行、删除重复记录或剔除合计行。先明确规则；发现异常时用中文报错，或导出异常明细并按用户批准的规则处理。
+7. 普通 DataFrame 导出主要保存数据值，不会自动还原原 Excel 的样式、合并单元格和公式。需要保留这些内容时，应明确用 openpyxl 读取原文件并另存结果，且只处理用户指定范围。
+
+六、可直接调用的工作台函数
+
+display(value, title="分析结果")
+    在界面显示 DataFrame、Series 或 dict；其他对象输出为文字。
+    每张结果表只预览最多 100 行、40 列，单格最多 1,000 字符；完整数据另行保存。
+    print() 用于中文运行日志，不要把全部大表打印到日志。
+
+save_excel(data, filename="结果.xlsx", index=False)
+    将 DataFrame，或 {Sheet名: DataFrame} 字典保存到本次结果目录。
+    默认不导出索引，自动避免文件重名覆盖，返回 pathlib.Path。
+    例如：save_excel({"汇总": summary, "明细": detail}, "核对结果.xlsx")。
+    使用 openpyxl 引擎；需要复杂样式或 Excel 内嵌图表时，可以自行通过 openpyxl / XlsxWriter 写入 OUTPUT_DIR。
+
+save_figure(figure=None, filename="图表.png")
+    保存 Figure 为 PNG、在界面展示，然后关闭该图，返回 pathlib.Path。
+    例如：save_figure(fig, "月度趋势.png")。
+    也支持 plt.show()；脚本结束时未关闭的图会自动保存。
+    若需要展示图表，不要在调用该函数之前 plt.close(fig)。
+
+split_table(data, column, prefix="拆分")
+    按一个字段的取值分组导出多个 .xlsx，包含空值组，返回 Path 列表。
+    例如：split_table(df, "部门", prefix="部门明细")。
+
+merge_tables(source_tables=None, source_column="来源")
+    默认合并 tables，也可传入 {名称: DataFrame} 字典。
+    它按列名对齐后“纵向追加行”，不是按业务键横向关联。
+    默认新增“来源”列，若该列已存在会报错；可换名称或传 source_column=None。
+    返回合并后的 DataFrame，不会自动导出；请再调用 save_excel。
+    按客户号、订单号等“横向对账/关联”应使用 pd.merge，并先检查关联键、空值、重复值及关联关系。
+
+七、财务计算和图表约束
+
+1. 明确金额单位（元、万元等）、币种、税额口径、期间、利率单位与还款频率。
+2. 明确现金流正负方向、起始时点、计息方式及舍入规则；不要把月利率与年利率混用。
+3. numpy_financial.npv 将第一个现金流视为 t=0。非等间隔日期现金流使用 PyXIRR 的 XIRR / XNPV。
+4. 精确金额用 Decimal，并由需求指定“逐笔舍入后汇总”还是“先汇总再舍入”。对空值、无效金额、非有限数要有明确处理。
+5. 原数据中的合计行可能导致重复统计，不能未经确认就把合计行和明细一起相加。
+6. 行情、汇率、利率、假日规则及估值输入来自本地文件或用户参数；不要联网查询或编造缺失输入。
+7. 图表使用 matplotlib / seaborn 静态绘图，保留 Agg 后端；不使用交互网页或弹窗。
+8. 推荐采用 fig, ax = plt.subplots(...)，设置中文标题、单位和必要的刻度，再调用 save_figure(fig, "图表.png")。
+9. 界面最多展示 40 项结果；PNG 单张超过 4 MB 或累计超过 20 MB 时只保存文件。不要把预览限制误认为文件导出限制。
+10. 默认运行超时为 2 分钟，可由用户在软件界面调整。大数据尽量使用向量化操作，避免逐行 apply 和不必要的重复读取；不要创建额外 Python 进程。
+
+八、代码交付要求
+
+1. 如果文末缺少真实字段、计算口径或必要参数，先提出少量关键问题；不要猜测后直接计算。
+2. 信息充分后，只给一份完整可执行的 Python 代码，不要 Markdown 代码围栏，不要省略号或“自行补充”占位实现。
+3. 参数集中在开头；使用简洁中文注释，并打印处理进度与结果保存位置。
+4. 先复制需要处理的 DataFrame，再验证字段、类型、空值及关键业务条件；缺字段时用中文 ValueError 列出缺失字段和实际字段。
+5. 正常输出通过 display、save_excel、save_figure 或 OUTPUT_DIR 完成，不改写源文件。
+6. 脚本可重复运行，不能依赖前一次运行的变量或固定电脑路径。
+7. 不要重新定义或覆盖工作台的 df、tables、inputs、OUTPUT_DIR 和辅助函数；用新的局部变量保存处理结果。
+8. 不要重定向 sys.stdout / sys.stderr，不要修改软件配置或关闭其进程；使用正常 print 和异常信息反馈。
+9. 对只需分析已选择表格的任务，直接使用 df / tables，不再弹窗选文件或要求用户手填路径。
+10. 若代码运行报错，我会提供日志。请基于此环境修正代码，不要改为要求安装额外库。
+
+九、本次需求（每次使用时填写）
+
+任务目标：
+［例如：按部门、月份汇总含税收入，与预算表对比，输出差额和完成率，并绘制月度趋势图］
+
+本次使用的 Sheet 与对应 tables 键：
+［文件名 / Sheet 名；有多张表时逐个列出，并说明各自用途］
+
+字段名称、类型和含义：
+［例如：日期=交易日期；部门=部门名称；含税金额=人民币元；订单号=文本编号］
+
+少量样例数据：
+［可提供 3～5 行虚构样例，用来说明字段格式、空值和合计行情况］
+
+计算规则与参数：
+［时间范围、筛选条件、关联键、币种、单位、含税/不含税、舍入规则、空值/异常/重复/合计行处理方式］
+
+期望输出：
+［Excel 文件名与 Sheet 名、需要的汇总和明细、图表类型、标题、横纵坐标及单位］
+
+其他要求：
+［数据规模、排序方式、格式、是否保留原表样式等；没有则写“无”］
+
+请严格基于以上环境与接口完成本次需求。

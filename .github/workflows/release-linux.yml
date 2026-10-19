@@ -1,0 +1,230 @@
+name: Release (Linux)
+
+# 麒麟 / UOS 版发布流水线（v2.8.0 起）。
+#
+# 为什么是独立 workflow 而不是给 release.yml 加 OS matrix：
+#   release.yml 不只是构建——它还镜像代码到 Gitee、建 Gitee release、用 curl.exe
+#   按特定参数顺序传附件（v2.5.1 踩过的坑）。改成 matrix 要给五个 step 挂 if:，
+#   还要解决「Gitee release 只能建一次、多个 job 都要往上传」。
+#   更重要的是：**全新平台绝不能有能力阻断已验证的 Windows 发版**。
+#   独立 workflow 下 Linux 挂掉 = 绿色 release 旁边一个红勾；
+#   matrix + fail-fast 下 = 根本没有 release。
+#   action-gh-release 是幂等的，谁先到谁建 release，另一个追加附件；
+#   generate_release_notes 只留在 Windows 那条，避免重复生成发布说明。
+#
+# ★ 采用前提：先在真机上用 build_linux.sh 产出过一个验证通过的 tar.gz。
+#   CI 的职责是复现那个包，不是探索。
+
+# ★ 只手动触发，**不跟随 tag 自动跑**。
+#
+# 为什么：麒麟产物必须在真机上验收过才能发给同事（见 docs/RELEASING.md §1.7），
+# 而真机验收是有成本的。如果每个 tag 都自动发一份没人验过的 Linux 包，
+# 同事下载到手里出问题，比「麒麟版停在上一个版本」糟糕得多。
+# 所以节奏解耦：Windows 每个版本都发，麒麟版按需发。
+#
+# 用法（★ 两步，别一步到位）：
+#   第 1 步 —— Actions 页 → Release (Linux) → Run workflow → 填 tag，
+#              「发布到 Release 页」**留空**。跑完从该次运行的 Artifacts 里
+#              下载 tar.gz，拷到真机按 docs/RELEASING.md §1.7 的清单验收。
+#   第 2 步 —— 验收通过后，用同一个 tag 再跑一次，这次**勾上**「发布到 Release 页」。
+#
+# 为什么要分两步：publish 一旦跑过，包就挂在公开 Release 页上了，
+# 同事随时可能下载。未验收的包在那儿待着，比「麒麟版停在上一个版本」糟糕得多。
+# 默认不发布，就是让「忘了验收」的默认后果是「没发出去」而不是「发了个坏包」。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建的 tag（例如 v2.8.0）"
+        required: true
+        type: string
+      publish:
+        description: "发布到 Release 页（首次跑请留空：先构建，真机验收过再勾）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    # 旧上游发布流程只在原仓库运行。
+    if: github.repository == 'MarsandSea/ExcelRouter'
+    strategy:
+      fail-fast: false        # 一个架构挂了不拖累另一个
+      matrix:
+        include:
+          - { runner: ubuntu-22.04,     arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }   # 公开仓库的免费 ARM runner
+    runs-on: ${{ matrix.runner }}
+
+    # ★ 关键：跑在 almalinux:8 容器里，runner 自身的 glibc 就变得无关了。
+    #   麒麟 V10 的 glibc 是 2.28~2.31，而 ubuntu-22.04/24.04 runner 是 2.35/2.39——
+    #   直接在 runner 上打包，产物拿到麒麟上会报 "GLIBC_2.34 not found"。
+    #   AlmaLinux 8 = glibc 2.28，与麒麟 V10 同代（都是 RHEL8 血统），
+    #   同时是 actions/checkout@v4（Node 20 要 glibc >= 2.28）还能跑的最低容器。
+    #   manylinux 容器不行：它的 CPython 没编 _tkinter，customtkinter 根本 import 不了。
+    container:
+      image: almalinux:8
+
+    steps:
+      - name: 安装工具链
+        # 不能用 actions/setup-python：它下载的二进制是对着新 glibc 编的，
+        # 在 glibc 2.28 容器里跑不起来。必须用发行版自带的 python3.12。
+        #
+        # ★ python3.12-pip 必须显式装：RHEL8 系把 pip 拆成了单独的包，
+        #   只装 python3.12 的话 `python3.12 -m pip` 报 "No module named pip"。
+        run: |
+          dnf -y install python3.12 python3.12-devel python3.12-tkinter \
+                         python3.12-pip python3.12-setuptools \
+                         tk tcl gcc binutils tar gzip which findutils \
+                         fontconfig
+          # 兜底：万一某个镜像源里没有 python3.12-pip，用标准库自带的 ensurepip
+          python3.12 -m pip --version || python3.12 -m ensurepip --upgrade
+          python3.12 -m pip --version
+
+      - name: 安装中文字体
+        # ★ 包名坑：`wqy-zenhei-fonts` 是 Debian/Ubuntu 的名字，AlmaLinux 的基础仓里
+        #   根本没有（它在 EPEL），照抄会让整个 job 在第一步就挂掉。
+        #   RHEL8 系自带的是 AppStream 里的 google-noto-sans-cjk-ttc-fonts。
+        #   装字体不是可选项：没有它，中文水印用例会 skip 掉，而那正是麒麟上
+        #   最要命的回归点——必须让它在 CI 里真的跑。
+        #   这里按发行版差异逐个试，装上哪个算哪个；下一步的断言负责兜底：
+        #   一个都没装上时 _find_cjk_font() 返回 None，那一步会 fail。
+        run: |
+          dnf -y install google-noto-sans-cjk-ttc-fonts \
+            || dnf -y install google-noto-sans-cjk-fonts \
+            || dnf -y install wqy-zenhei-fonts \
+            || echo "⚠ 常见中文字体包都没装上，交给下一步的断言判定"
+          fc-cache -f || true
+          echo "--- 容器里的中文字体 ---"
+          fc-list :lang=zh | head -5 || true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}      # 构建指定 tag 的代码，而不是 main 的半成品
+
+      - name: 安装依赖并自测
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -r requirements.txt -r requirements-dev.txt pyinstaller
+          python3.12 -m pytest -q
+          python3.12 -m py_compile main.py core/*.py gui/*.py
+
+      - name: 确认中文水印用例真的跑了（不是 skip）
+        # 容器里装了中文字体，这条用例就必须是 PASS。如果它 skip 了，
+        # 说明字体包没装上或 _find_cjk_font 探测挂了——那正是麒麟上最要命的回归。
+        run: |
+          python3.12 -c "from core.pdf_dist import _find_cjk_font; p=_find_cjk_font(); print('font:', p); assert p, '容器里没探测到中文字体'"
+          python3.12 -m pytest -q tests/test_pdf_dist.py -k cjk_end_to_end --no-header -rN
+
+      - name: 打包
+        run: |
+          chmod +x build_linux.sh
+          PYTHON=python3.12 ./build_linux.sh
+
+      - name: 断言 glibc 下限
+        # ★ 整条流水线最值钱的一步：把「能不能在麒麟上跑」从一个期望
+        #   变成机器可校验的不变量。依赖 wheel 升级导致的回归会被自动抓住。
+        run: |
+          FLOOR=$(objdump -T dist/*/ExcelRouter dist/*/_internal/*.so* 2>/dev/null \
+                  | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)
+          echo "产物 glibc 下限 = $FLOOR （上限允许 GLIBC_2.28）"
+          if [ "$(printf '%s\nGLIBC_2.28\n' "$FLOOR" | sort -uV | tail -1)" != "GLIBC_2.28" ]; then
+            echo "❌ 下限高于 GLIBC_2.28，这个包在麒麟 V10 上起不来"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build-linux
+    # ★ 默认不发布。没勾这个框时本 job 整体跳过，产物只留在本次运行的
+    #   Artifacts 里（可下载、不公开），正好用来做真机验收。
+    if: github.repository == 'MarsandSea/ExcelRouter' && (inputs.publish)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # 附加到指定 tag 已有的 Release 上（Windows 那条流水线先建好的）
+          tag_name: ${{ inputs.tag }}
+          files: artifacts/**/*.tar.gz
+          # 发布说明交给 Windows 工作流生成，这里不重复生成
+          generate_release_notes: false
+
+      - name: 同步到 Gitee 发行版
+        # 国内同事主要从 Gitee 下载（直连快、免登录），信创内网访问 GitHub 往往很慢——
+        # v2.9.3 之前这条流水线只传 GitHub，Gitee 上根本找不到麒麟包。
+        #
+        # 前提：Gitee 发行版由 Windows 流水线（release.yml）在打 tag 时建好。
+        # 本步只做三件事，全部幂等（同一个 tag 重跑不会重复上传）：
+        #   ① 上传还没有的 tar.gz；② 发行版标题补上「麒麟」（百度搜索摘要取自这里）；
+        #   ③ 正文里「麒麟版按需构建」那行换成真正的下载指引。
+        # 与 GitHub 那步不同，这里失败要红：静默失败就会回到「Gitee 上没有麒麟包」的老问题。
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE }}
+          TAG: ${{ inputs.tag }}
+          API: https://gitee.com/api/v5/repos/Marsandsea/Excelrouter
+        run: |
+          set -euo pipefail
+          [ -n "$GITEE_TOKEN" ] || { echo "::error::缺少 secrets.GITEE"; exit 1; }
+
+          rel=$(curl -sS --fail "$API/releases?access_token=$GITEE_TOKEN&per_page=20&direction=desc" \
+                | jq -c --arg t "$TAG" '[.[] | select(.tag_name == $t)][0] // empty')
+          [ -n "$rel" ] || { echo "::error::Gitee 上没有 $TAG 的发行版（应由 release.yml 先建好）"; exit 1; }
+          rid=$(jq -r .id <<<"$rel")
+
+          # ① 上传。Gitee 上用**固定文件名**（不带版本号）：
+          #    Gitee 支持 /releases/download/latest/<文件名> 永远指向最新发行版的同名附件，
+          #    固定名 = 一条可以发群、做二维码的永久下载链接，每次发版自动指向新包；
+          #    而且不像 GitHub 那样「版本名 + 固定名」各传一份——Gitee 社区版附件总容量
+          #    只有 1GB（2026-10 实测已用 ~800MB），重复上传吃不起。
+          #    access_token 必须排在 file 前面，原因见 release.yml 的同名步骤。
+          have=$(curl -sS --fail "$API/releases/$rid/attach_files?access_token=$GITEE_TOKEN&per_page=100" \
+                 | jq -r '.[].name')
+          mkdir -p gitee
+          for f in artifacts/*/*.tar.gz; do
+            arch=$(basename "$f" | sed -E 's/.*-linux-([a-z0-9_]+)\.tar\.gz$/\1/')
+            name="ExcelRouter-Linux-${arch}.tar.gz"
+            if grep -qxF "$name" <<<"$have"; then
+              echo "已存在，跳过：$name"; continue
+            fi
+            cp "$f" "gitee/$name"
+            curl -sS --fail-with-body -F "access_token=$GITEE_TOKEN" -F "file=@gitee/$name" \
+              "$API/releases/$rid/attach_files" >/dev/null
+            echo "已上传：$name"
+          done
+
+          # ②③ 标题与正文（PATCH 要求 tag_name/name/body 三项都带）
+          name=$(jq -r .name <<<"$rel" | sed 's/Windows 免安装版$/Windows · 银河麒麟 · 统信 UOS 免安装版/')
+          latest="https://gitee.com/marsandsea/ExcelRouter/releases/download/latest"
+          linux_lines="- **银河麒麟 / 统信 UOS**：x86_64 台式机下载 \`ExcelRouter-Linux-x86_64.tar.gz\`，ARM 笔记本（如华为）下载 \`ExcelRouter-Linux-aarch64.tar.gz\`；解压后运行里面的「安装到开始菜单.sh」，之后从开始菜单打开。永久最新版链接（可直接发群）：[x86_64](${latest}/ExcelRouter-Linux-x86_64.tar.gz) · [ARM](${latest}/ExcelRouter-Linux-aarch64.tar.gz)"
+          body=$(jq -r .body <<<"$rel" | awk -v new="$linux_lines" '
+            /^- 银河麒麟 \/ 统信 UOS 版按需构建/ { print new; done=1; next } { print }
+            ')
+          if ! grep -qF "Linux-x86_64.tar.gz" <<<"$body"; then
+            body="$body"$'\n\n'"$linux_lines"
+          fi
+          curl -sS --fail-with-body -X PATCH "$API/releases/$rid" \
+            --data-urlencode "access_token=$GITEE_TOKEN" \
+            --data-urlencode "tag_name=$TAG" \
+            --data-urlencode "name=$name" \
+            --data-urlencode "body=$body" >/dev/null
+          echo "Gitee 发行版已更新：$name"
+
+  # 麒麟包每版约 115MB，传完复查 Gitee 容量，快满时开 Issue 提醒
+  gitee-quota:
+    needs: publish
+    if: github.repository == 'MarsandSea/ExcelRouter' && (always() && inputs.publish)
+    uses: ./.github/workflows/gitee-quota.yml
+    secrets: inherit
+    permissions:
+      issues: write

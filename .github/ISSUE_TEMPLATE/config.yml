@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 FAQ（常见问题，先看这里）
+    url: https://github.com/houjuan0623/EasyExcel/blob/main/desktop/README.md
+    about: EasyExcel 的启动、离线运行、脚本库和打包说明

@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    # 旧上游发布流程只在原仓库运行。
+    if: github.repository == 'MarsandSea/ExcelRouter'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests (block release on failure)
+        run: pytest -q
+
+      - name: Syntax check
+        shell: bash
+        run: python -m py_compile main.py core/*.py gui/*.py
+
+      - name: Extract version from tag
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Mirror code + tag to Gitee
+        # Best-effort: Gitee sync must never block the official GitHub release.
+        # Requires repo secret GITEE (Gitee personal access token with
+        # repo/projects write scope). Gitee's HTTPS git auth accepts the
+        # literal username "oauth2" with the token as password. Force-push
+        # because Gitee is a pure mirror -- it should never diverge on its own.
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE }}
+        run: |
+          $url = "https://oauth2:${env:GITEE_TOKEN}@gitee.com/Marsandsea/Excelrouter.git"
+          git remote add gitee $url
+          git push gitee HEAD:refs/heads/main --force
+          git push gitee "refs/tags/${{ github.ref_name }}" --force
+
+      - name: Build onedir (recommended distribution)
+        run: >
+          pyinstaller --onedir --noconsole
+          --name "ExcelRouter"
+          --icon app.ico
+          --version-file version.txt
+          --collect-all customtkinter
+          --collect-all tkinterdnd2
+          --add-data "config;config"
+          --add-data "app.ico;."
+          --exclude-module numpy
+          --exclude-module pandas
+          --exclude-module pytest
+          --exclude-module _pytest
+          --exclude-module pygments
+          --exclude-module setuptools
+          --exclude-module pip
+          main.py
+
+      - name: Build onefile (single-file fallback)
+        run: >
+          pyinstaller --onefile --noconsole
+          --name "ExcelRouter-onefile"
+          --icon app.ico
+          --version-file version.txt
+          --collect-all customtkinter
+          --collect-all tkinterdnd2
+          --add-data "config;config"
+          --add-data "app.ico;."
+          --exclude-module numpy
+          --exclude-module pandas
+          --exclude-module pytest
+          --exclude-module _pytest
+          --exclude-module pygments
+          --exclude-module setuptools
+          --exclude-module pip
+          main.py
+
+      - name: Package onedir as zip
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          Compress-Archive -Path "dist/ExcelRouter/*" -DestinationPath "dist/ExcelRouter-v$ver-win64.zip"
+          Rename-Item "dist/ExcelRouter-onefile.exe" "ExcelRouter-v$ver.exe"
+          # 再复制一份「文件名不带版本号」的同内容 zip，专供站外投放（CSDN 文章、
+          # 落地页、微信转发）使用的**固定下载直链**：
+          #   https://github.com/MarsandSea/ExcelRouter/releases/latest/download/ExcelRouter-Windows.zip
+          # 实测该地址 302 到真实附件并带 Content-Disposition: attachment ——
+          # 浏览器不渲染任何仓库页面，点一下就开始下载，普通用户不需要看懂 GitHub。
+          # 有了它，发版后不必再去逐处改链接里的版本号（漏改一处用户就下到旧版）。
+          # ★ 文件名保持纯 ASCII：GitHub 会替换 release 附件名里的非 [A-Za-z0-9._-]
+          #   字符，中文名会让这个固定地址失效。
+          # ★ Gitee 也有同样的固定直链（2026-10-12 实测 302 到附件；早先记的「404」已过时）：
+          #   https://gitee.com/marsandsea/ExcelRouter/releases/download/latest/ExcelRouter-Windows.zip
+          #   国内用户都走这条，README / 落地页的主下载按钮指向它。
+          Copy-Item "dist/ExcelRouter-v$ver-win64.zip" "dist/ExcelRouter-Windows.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ExcelRouter-Windows.zip
+            dist/ExcelRouter-v${{ steps.ver.outputs.version }}-win64.zip
+            dist/ExcelRouter-v${{ steps.ver.outputs.version }}.exe
+          generate_release_notes: true
+
+      - name: Create Gitee Release
+        # Best-effort mirror of the release metadata via Gitee API v5.
+        # If the tag doesn't exist yet on Gitee, target_commitish makes
+        # Gitee create it automatically pointing at this exact commit.
+        id: gitee_release
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE }}
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          # 百度搜 excelrouter 排第一的是 Gitee 发行版页，摘要就取自这里的 name/body——
+          # 所以正文写成「产品介绍 + 下载指引」，而不是一句「同步自 GitHub」。
+          # 正文由 update_gitee_releases.py 生成（模板 + docs/release-notes-v{ver}.md 的「## 正文」），
+          # 回填历史 release 也用它，改文案只改一处。
+          python update_gitee_releases.py --write-body $ver gitee_body.md
+          $notes = Get-Content -Raw -Encoding utf8 gitee_body.md
+          $body = @{
+            access_token     = $env:GITEE_TOKEN
+            tag_name         = "v$ver"
+            name             = "v$ver · Excel 智能拆分汇总工具 Windows 免安装版"
+            target_commitish = "${{ github.sha }}"
+            body             = $notes
+          }
+          $resp = Invoke-RestMethod -Uri "https://gitee.com/api/v5/repos/Marsandsea/Excelrouter/releases" -Method Post -Body $body
+          "release_id=$($resp.id)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload assets to Gitee Release
+        # Uses curl.exe (bundled on windows-latest runners), not
+        # Invoke-RestMethod -Form. PowerShell hashtables have no guaranteed
+        # key order, so -Form @{ access_token=...; file=... } can stream the
+        # (large) file part before the access_token part; Gitee's upload
+        # endpoint then times out waiting for the token and rejects the
+        # request as unauthenticated (40001) even though the token is valid
+        # -- this is exactly what broke the v2.5.1 upload. curl -F preserves
+        # the order fields are given on the command line, so access_token
+        # always arrives first.
+        if: steps.gitee_release.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE }}
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $releaseId = "${{ steps.gitee_release.outputs.release_id }}"
+          $files = @(
+            "dist/ExcelRouter-Windows.zip",
+            "dist/ExcelRouter-v$ver-win64.zip",
+            "dist/ExcelRouter-v$ver.exe"
+          )
+          foreach ($f in $files) {
+            $resp = curl.exe -s -S --fail-with-body `
+              -F "access_token=$env:GITEE_TOKEN" `
+              -F "file=@$f" `
+              "https://gitee.com/api/v5/repos/Marsandsea/Excelrouter/releases/$releaseId/attach_files"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "curl upload failed for $f`: $resp"
+              exit 1
+            }
+            Write-Host "Uploaded $f`: $resp"
+          }
+
+  # Gitee 上传是 continue-on-error，空间满了会静默失败——发完复查容量，快满时开 Issue 提醒
+  gitee-quota:
+    needs: build-and-release
+    if: github.repository == 'MarsandSea/ExcelRouter' && (always())
+    uses: ./.github/workflows/gitee-quota.yml
+    secrets: inherit
+    permissions:
+      issues: write

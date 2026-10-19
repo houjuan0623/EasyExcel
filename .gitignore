@@ -1,0 +1,94 @@
+# 打包产物
+dist/
+build/
+*.spec
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 用户配置（不上传，每个用户自己的设置）
+config/user_config.json
+user_config.json
+
+# PyArmor 产物
+.pyarmor/
+pyarmor_runtime*/
+
+# 日志
+*.log
+log_*.txt
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Claude Code 本地设置（个人，不上传）
+.claude/settings.local.json
+
+# WorkBuddy 项目级本地状态（工作记录 / 本地技能，个人，不上传）
+# 注意：仓库根一旦有它，git status 会一直显示 `?? .workbuddy/`；
+# 不忽略的话 `git add -A` 会把本地工作日志提交到公开仓库（2026-09-15 复核发现）。
+.workbuddy/
+
+# 真实业务数据 / 个人工作文件（含个人信息，绝不上传）
+upload/
+拆分网格及人员脚本v35.txt
+.lingxi/
+
+# 调试日志（er_logs*.txt 是本地排障输出，别入库；上面的 log_*.txt 规则盖不住）
+er_logs*.txt
+
+# 根目录的 skill 打包产物（dist/ build/ 已在上面忽略）
+excelrouter-skill-*.zip
+
+# 本地自攒的数据（SkillHub 下载曲线等，个人）
+stats/
+
+# 内部分析报告：docs/ 自 v2.9 起是 GitHub Pages 的发布目录，任何提交进 docs/ 的
+# HTML 都会立刻变成公开网页（含推广诊断、竞品分析、数据基线）。这些只给自己看，
+# 钉死在忽略列表里，避免一次 `git add -A` 就把内部策略发上公网。
+docs/excel-router-*.html
+docs/adversarial-review-*.md
+
+# make_icons.py 的效果对照图，看完即弃，不是构建产物
+icon-preview.png
+
+# 对内投放策略，绝不入库：推广总纲/内容排期/题库里有账号名、选题纪律、下载量基线，
+# 公开出去会直接毁掉软文的可信度。2026-09-23 被一次 git add -A 误提过，别再来一次。
+promo/
+
+# ── 测试/拆分产物：铁律，任何情况下不入库 ─────────────────────────
+# 用户纪律（2026-10-09）：测试拆分的任何数据（一线人员名单、客户明细、
+# 密码表 PDF 等）都不许留在仓库目录内，避免被 git 带走。
+# 正确的测试沙箱在仓库外：G:\tmp\excelrouter-sandbox\
+# 这里再做一层兜底：即使一时忘了选目录，git add -A 也抓不走。
+_smoke/
+tmp_rerun/
+tmp_*/
+*_rerun/
+sandbox/
+out/
+output/
+test_out/
+test_output/
+拆分结果/
+split_out/
+
+# v3.0 桌面版「📋 方案」默认存在程序目录（源码运行时就是仓库根）
+我的方案/
+
+# Electron 界面依赖与产物
+node_modules/
+desktop/dist-electron/
+desktop/release/
+desktop/.cache/
+desktop/test-results/
+.desktop-python
+
+# 上游演示工作簿仅保留在本机，不随 EasyExcel 源码发布。
+/examples/*.xlsx

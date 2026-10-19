@@ -1,0 +1,404 @@
+name: Publish skill to SkillHub & ClawHub
+
+# skill 与桌面版 core 同仓之后，「从上游拉代码」这一层就不需要了：
+# 发版（打 v* tag）的这一刻，本仓 core/ 就是那个 tag 的内容，直接复制过去即可，
+# 天然满足「跟 tag 不跟 main」。相比老仓库（MarsandSea/excelrouter-skill）那个
+# 每天 cron 去远程比对 tag 的写法，这里少了跨仓网络依赖、tag 比对和「上游已发版
+# 但 skill 还停在旧 tag」的时间差。
+#
+# 触发：打 v* tag（与 release.yml 同一时机）或手动 workflow_dispatch。
+#
+# ⚠️ 手动触发时**默认不同步 core**（sync_core=false），只把 skill 现有内容发出去。
+# 原因：main 分支上的 core/ 是未发版的开发中代码（比最新 tag 超前很多），
+# 手动发布若顺手同步 core，就会把未发版代码标着旧版本号发出去 —— 内容与版本不符。
+# 只有打 tag 时（此刻 core/ == 该 tag 内容）才同步，这才是「跟 tag 不跟 main」。
+#
+# secrets（配在本仓库，不在已归档的 excelrouter-skill 仓库）：
+#   SKILLHUB_TOKEN —— skillhub.cn 个人中心 → API keys 创建（skh_ 开头）
+#   CLAWHUB_TOKEN  —— clawhub.ai 登录后创建 API token（clh_ 开头）
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      sync_core:
+        description: "同步本仓 core/ 到 skill？手动发布时保持不选，避免把未发版的 core 发出去"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  SKILL_DIR: excelrouter-skill/skills/excelrouter
+  VENDOR_DIR: excelrouter-skill/skills/excelrouter/scripts/vendor/core
+  TAG_FILE: excelrouter-skill/.upstream-tag
+  UPSTREAM_MD: excelrouter-skill/skills/excelrouter/scripts/vendor/UPSTREAM.md
+  PLUGIN_JSON: excelrouter-skill/.claude-plugin/plugin.json
+  MANIFEST_FILE: excelrouter-skill/skills/excelrouter/manifest.yaml
+  SKILL_MD: excelrouter-skill/skills/excelrouter/SKILL.md
+  REQ_FILE: excelrouter-skill/skills/excelrouter/requirements.txt
+  REQ_PDF_FILE: excelrouter-skill/skills/excelrouter/requirements-pdf.txt
+  TESTS_DIR: excelrouter-skill/skills/excelrouter/tests
+
+jobs:
+  publish:
+    # 旧上游发布流程只在原仓库运行。
+    if: github.repository == 'MarsandSea/ExcelRouter'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version from tag
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          elif [ -n "${GITHUB_REF_NAME:-}" ] && [ "${GITHUB_REF_TYPE:-}" = "branch" ]; then
+            # 手动触发时取本仓最新的 v* tag
+            TAG="$(git tag -l 'v*' --sort=-v:refname | head -n1)"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::取不到版本号（没有 v* tag，且不是 tag 触发）"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 决定是否同步 core
+        # 只有「打 tag」或「手动勾选 sync_core」才同步；否则跳过，避免把
+        # main 上未发版的 core 发出去（详见文件头说明）。
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] || [ "${{ inputs.sync_core }}" = "true" ]; then
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+            echo "本次会同步 core/"
+          else
+            echo "sync=false" >> "$GITHUB_OUTPUT"
+            echo "本次不同步 core/，直接发布 skill 现有内容"
+          fi
+
+      - name: Sync core/ into skill vendor (same repo, no upstream fetch)
+        if: steps.mode.outputs.sync == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$VENDOR_DIR"/*.py
+          cp core/*.py "$VENDOR_DIR"/
+          echo "已同步 core → $VENDOR_DIR"
+          ls -la "$VENDOR_DIR"
+
+      - name: Sync requirements (strip GUI-only deps, split PDF extras)
+        if: steps.mode.outputs.sync == 'true'
+        # 白名单式排除：桌面版是 GUI 程序，skill 是命令行形态，
+        # 这些 GUI 依赖混进来会让无界面环境（CI / SkillHub 沙箱）装依赖失败或明显变慢。
+        # 注意别写成只排除 customtkinter —— 上游第 2 行就是 tkinterdnd2。
+        #
+        # 同时把 PDF 三件套拆到 requirements-pdf.txt：主文件只留 Excel 必需的 2 个（v3.0 起不要 pandas），
+        # 用户不用 PDF 功能就不必装（SkillHub 自动化评测会把"依赖过多"记为扣分项）。
+        shell: bash
+        run: |
+          set -euo pipefail
+          # msoffcrypto-tool：v2.10 起给 Word/Excel/PPT 加打开密码，core 里延迟导入，没装只跳过 Office 文件
+          PDF_DEPS='pypdf|fpdf2|cryptography|msoffcrypto-tool'
+          {
+            echo "# excelrouter skill 运行依赖 —— Excel 拆分、汇总、查收只需要下面这 2 个"
+            echo "# PDF 加密分发才需要的 pypdf / fpdf2 / cryptography 已拆到 requirements-pdf.txt，"
+            echo "# 用不到 PDF 功能就不必装（脚本会在真正用到时报人话提示）。"
+            echo "# 已去掉桌面版 GUI 专用依赖 customtkinter / tkinterdnd2 —— skill 是命令行形态。"
+            grep -viE "^(customtkinter|tkinterdnd2|${PDF_DEPS})" requirements.txt
+          } > "$REQ_FILE"
+          {
+            echo "# PDF 批量加密分发的可选依赖 —— 只在需要 PDF 功能时才装："
+            echo "#   pip install -r requirements-pdf.txt"
+            echo "# 只做 Excel 拆分时不需要，跳过即可（脚本内置依赖自检，用到时才提示）。"
+            grep -iE "^(${PDF_DEPS})" requirements.txt
+          } > "$REQ_PDF_FILE"
+          echo "--- requirements.txt ---"; cat "$REQ_FILE"
+          echo "--- requirements-pdf.txt ---"; cat "$REQ_PDF_FILE"
+          # 兜底断言：真漏了就在这里炸掉，别把坏包发上去。
+          # ⚠️ 必须先滤掉注释行：上面写入的说明注释里就写着 customtkinter / tkinterdnd2
+          # 这两个词，全文件 grep 会自噬误报（v2.7.2 发版时首次踩中）。
+          _deps() { grep -viE '^[[:space:]]*#' "$1"; }
+          if _deps "$REQ_FILE" | grep -qiE 'customtkinter|tkinterdnd2'; then
+            echo "::error::GUI 依赖混进了 skill 的 requirements.txt"
+            exit 1
+          fi
+          if _deps "$REQ_FILE" | grep -qiE "${PDF_DEPS}"; then
+            echo "::error::PDF 依赖没从 requirements.txt 里拆干净"
+            exit 1
+          fi
+          n="$(grep -ciE "^(${PDF_DEPS})" "$REQ_PDF_FILE" || true)"
+          if [ "${n:-0}" -lt 4 ]; then
+            echo "::error::requirements-pdf.txt 只有 $n 个依赖，期望 4 个（上游可能改了包名）"
+            exit 1
+          fi
+
+      - name: Update tag file / upstream md
+        if: steps.mode.outputs.sync == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          NOW="$(date -u '+%Y-%m-%d %H:%M UTC')"
+
+          echo "$TAG" > "$TAG_FILE"
+
+          python3 - "$UPSTREAM_MD" "$TAG" "$SHA" "$NOW" <<'PYEOF'
+          import re, sys
+          path, tag, sha, now = sys.argv[1:5]
+          with open(path, encoding="utf-8") as f:
+              content = f.read()
+          block = (
+              "<!-- SYNC:BEGIN 以下内容由 publish-skill.yml 每次发布自动重写，手改无效 -->\n"
+              "## 当前同步状态\n\n"
+              f"- 对应本仓库 tag：`{tag}`\n"
+              f"- 对应 commit：`{sha}`\n"
+              f"- 同步时间：{now}\n"
+              "- 来源：与本仓库 `core/` 同一套代码（skill 与桌面版同仓，无需跨仓拉取）\n"
+              "<!-- SYNC:END -->"
+          )
+          new_content = re.sub(
+              r"<!-- SYNC:BEGIN .*? -->.*?<!-- SYNC:END -->",
+              block, content, count=1, flags=re.S,
+          )
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(new_content)
+          PYEOF
+
+      - name: Align version fields
+        # ⚠️ 这一步**刻意不加 if**：手动触发（sync=false）时也必须对齐。
+        # 原来它和上面的 tag 文件更新合在一起、只在 `sync == 'true'` 时跑，
+        # 导致手动发布时 manifest.yaml / plugin.json 都不会被更新 ——
+        # 2026-09-15 查到的 plugin.json 停在 2.7.4（落后两版）就是这个原因。
+        #
+        # 版本真源是 **SKILL.md frontmatter 的 version**：SkillHub CLI 与 ClawHub
+        # 实际读的都是它。刻意不用 steps.ver.outputs.version —— 那个取自本仓最新的
+        # v* tag，手动触发时可能是旧值（本仓 tag 此刻还停在 v2.7.0）。
+        id: veralign
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$MANIFEST_FILE" "$PLUGIN_JSON" "$SKILL_MD" <<'PYEOF'
+          import json, os, re, sys
+          manifest_path, plugin_path, skill_md_path = sys.argv[1:4]
+
+          with open(skill_md_path, encoding="utf-8") as f:
+              content = f.read()
+          m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n", content, re.S)
+          if not m:
+              raise SystemExit(f"{skill_md_path} 开头的 frontmatter 格式异常，找不到 --- 包裹")
+          fm = m.group(1)
+
+          vm = re.search(r'(?m)^version\s*:\s*["\']?([^"\'\s]+)', fm)
+          if not vm:
+              raise SystemExit(f"{skill_md_path} frontmatter 缺 version，skillhub CLI 会拒收")
+          version = vm.group(1).strip()
+          # 打 tag 触发时以 tag 为准：v2.10.0 发版时 SKILL.md 还写着 2.9.3，于是又按 2.9.3
+          # 发了一遍——SkillHub / ClawHub 拒收重复版本（continue-on-error 吞成绿 ✓），
+          # 结果 v2.10 的内核同步进了仓库、市场上却一直停在 2.9.3。tag 是发版的唯一真源。
+          if os.environ.get("GITHUB_REF_TYPE") == "tag":
+              tag_ver = os.environ.get("GITHUB_REF_NAME", "").lstrip("v")
+              if re.fullmatch(r"\d+(\.\d+)+", tag_ver) and tag_ver != version:
+                  print(f"SKILL.md 写的是 {version}，按 tag 改成 {tag_ver}")
+                  version = tag_ver
+          if not re.fullmatch(r"\d+(\.\d+)+", version):
+              raise SystemExit(f"SKILL.md 解析出的版本号不合规：{version!r}")
+
+          # manifest.yaml —— SkillHub 展示用
+          with open(manifest_path, encoding="utf-8") as f:
+              mtxt = f.read()
+          mtxt, n = re.subn(
+              r'(?m)^version\s*:.*$', f'version: "{version}"', mtxt, count=1
+          )
+          if n != 1:
+              raise SystemExit(f"在 {manifest_path} 里没找到 version: 行，请检查文件格式")
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(mtxt)
+
+          # plugin.json —— Claude Code 插件市场用
+          with open(plugin_path, encoding="utf-8") as f:
+              data = json.load(f)
+          data["version"] = version
+          with open(plugin_path, "w", encoding="utf-8") as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+              f.write("\n")
+
+          # SKILL.md frontmatter 的 displayName 以 manifest.yaml 为准，顺手同步
+          # （只动 frontmatter，别碰正文里可能出现的同名字样）
+          dm = re.search(r"(?m)^display_name\s*:\s*(.+)$", mtxt)
+          display_name = dm.group(1).strip().strip('"').strip("'") if dm else None
+
+          def set_fm(fm_text, key, value):
+              if value is None:
+                  return fm_text
+              pat = r"(?m)^" + key + r"\s*:.*$"
+              if re.search(pat, fm_text):
+                  return re.sub(pat, f"{key}: {value}", fm_text, count=1)
+              return fm_text.rstrip() + f"\n{key}: {value}"
+
+          fm = set_fm(fm, "version", f'"{version}"')
+          fm = set_fm(fm, "displayName", display_name)
+          content = content[:m.start(1)] + fm + content[m.end(1):]
+          with open(skill_md_path, "w", encoding="utf-8") as f:
+              f.write(content)
+
+          print(f"版本号已对齐为 {version}（manifest / plugin.json / SKILL.md frontmatter）")
+          gh_out = os.environ.get("GITHUB_OUTPUT")
+          if gh_out:
+              with open(gh_out, "a", encoding="utf-8") as f:
+                  f.write(f"version={version}\n")
+          PYEOF
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps and run skill tests
+        # 只跑 skill 包内的测试（tests/ 随包一起上架，改脚本后能就地验证）：
+        # 仓库根目录有桌面版的 conftest.py，无脑 `pytest -q` 会把桌面版测试也收集进来
+        # （那些依赖 GUI 库，跑不动）。
+        run: |
+          pip install -r "$REQ_FILE" -r "$REQ_PDF_FILE"
+          pip install pytest
+          pytest -q "$TESTS_DIR"
+
+      - name: Commit synced skill
+        id: commit
+        shell: bash
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "内容无变化，跳过提交与发布"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 工作区确实变了 —— 先把「本次要发布」这件事定下来。回写 main 只是留痕，
+          # 它失败绝不能挡住发布。
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$VENDOR_DIR" "$TAG_FILE" "$UPSTREAM_MD" "$PLUGIN_JSON" "$MANIFEST_FILE" "$SKILL_MD" "$REQ_FILE" "$REQ_PDF_FILE" "$TESTS_DIR"
+          git commit -m "chore(skill): 同步本仓 core 并发布 $TAG"
+          # ★ 目标分支写死 main，不能用 $GITHUB_REF_NAME。
+          # 本流水线是 tag 触发的，那个变量此刻等于 tag 名（如 v2.9.0），
+          # git 会把它当成已存在的 tag ref，直接
+          #   ! [rejected] HEAD -> v2.9.0 (already exists)
+          # 让整个 job exit 1 —— 后面的 SkillHub / ClawHub 两步**连跑都没跑**。
+          # 2026-09-23 的 v2.9.0 就是这么静默漏发的（Release 全绿、skill 没上架）。
+          # 同步产物属于代码，归宿只可能是 main。
+          if git push origin HEAD:refs/heads/main; then
+            echo "同步提交已回写 main"
+          else
+            echo "::warning::同步提交未能回写 main（main 可能已前进），本次发布照常继续；稍后手动跑一次 workflow_dispatch 补同步即可"
+          fi
+
+      - name: Validate SKILL.md frontmatter
+        # 发布前拦掉「静默降级」的元数据问题（2026-09-15 踩坑）：
+        # skillhub CLI 是逐行解析 frontmatter，值里带 ASCII「冒号+空格」它也照样发布成功；
+        # 但 WorkBuddy 客户端用真 YAML 解析，遇到就抛异常 → 技能卡描述降级成**安装目录名**
+        # （实际显示成 excelrouter__skillhub，发布链路却全绿）。
+        # 这里在打包前用真 YAML 解析器复检，不合格直接失败，别让坏元数据上线。
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 装上 pyyaml，让校验走真正的 YAML 解析（与 WorkBuddy 客户端行为一致），
+          # 而不是只做「冒号+空格」的字符串检查。
+          python3 -m pip install --quiet pyyaml
+          python3 check_skillmd.py "$SKILL_DIR"
+
+      - name: Publish to SkillHub
+        # 尽力而为：发布失败只留黄色警告，不影响本仓发版（与 Gitee 镜像同一策略）。
+        # 先 dry-run 校验格式，通过才真正发布：格式不合格就停在这一步，
+        # 不会把不合格的包送进审核队列。
+        if: steps.commit.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        shell: bash
+        env:
+          SKILLHUB_TOKEN: ${{ secrets.SKILLHUB_TOKEN }}
+          VERSION: ${{ steps.veralign.outputs.version }}
+        run: |
+          set -euo pipefail
+          # 发布前自检：SkillHub 会逐个检查文件类型，skill 目录里只要有一个
+          # . 开头的文件（.upstream-tag / .clawhubignore 之类）就整包拒收，
+          # 报「请求失败 (400): 不允许的文件类型: xxx」。与其等它失败，先在这里拦下。
+          bad="$(find "$SKILL_DIR" -name '.*' -type f -print)"
+          if [ -n "$bad" ]; then
+            echo "::error::skill 目录内有点开头文件，SkillHub 会整包拒收："
+            echo "$bad"
+            echo "处理方式：移到 skill 目录外（如 excelrouter-skill/ 根目录），或删掉。"
+            exit 1
+          fi
+          if [ -z "$SKILLHUB_TOKEN" ]; then
+            echo "::notice::未配置 SKILLHUB_TOKEN，跳过该渠道发布"
+            exit 0
+          fi
+          curl -fsSL https://skillhub.cn/install/install.sh | bash -s -- --cli-only
+          export PATH="$HOME/.local/bin:$PATH"
+          skillhub login --key "$SKILLHUB_TOKEN" --host https://api.skillhub.cn
+          skillhub publish "$SKILL_DIR" --host https://api.skillhub.cn --dry-run
+          skillhub publish "$SKILL_DIR" --host https://api.skillhub.cn --changelog "同步本仓 core v$VERSION"
+
+      - name: Publish to ClawHub
+        # 与 SkillHub 同一策略：尽力而为，失败只留黄色警告。
+        #
+        # ⚠️ 必须显式传 --version：ClawHub CLI 的 `--version` 帮助里写
+        # "defaults to 1.0.0 or next patch"，但实测那个 "next patch" **不会生效** ——
+        # 不传时它每次都申请 1.0.0（本地 dry-run 二次确认：`Would publish excelrouter@1.0.0`），
+        # 于是第二次发布会撞 `Version 1.0.0 already exists` 直接 exit 1。
+        # 2026-09-15 那次「看起来 success 但 ClawHub 没更新」就是这么来的
+        # （continue-on-error 把这个失败吞成了绿 ✓）。
+        #
+        # 版本号取上面 Align version fields 的输出 —— 即 SKILL.md frontmatter 的 version，
+        # 与 SkillHub 同源，两条渠道版本线从此统一。
+        if: steps.commit.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        shell: bash
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          VERSION: ${{ steps.veralign.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLAWHUB_TOKEN" ]; then
+            echo "::notice::未配置 CLAWHUB_TOKEN，跳过该渠道发布（否则会走设备授权、干等 15 分钟超时）"
+            exit 0
+          fi
+          echo "ClawHub 发布版本：$VERSION"
+          # ClawHub 面向海外用户：发布前把工作副本里的 description 换成英文（已提交的 SKILL.md 不动，
+          # SkillHub 上面已经按中文发过），换完再跑一遍 frontmatter 校验
+          python3 - "$SKILL_DIR/SKILL.md" excelrouter-skill/clawhub/description_en.txt <<'PY'
+          import re, sys
+          md, en = sys.argv[1], open(sys.argv[2], encoding="utf-8").read().strip()
+          assert '"' not in en and ": " not in en, "英文 description 里不能有双引号或「冒号+空格」"
+          text = open(md, encoding="utf-8").read()
+          new, n = re.subn(r'^description: ".*"$', lambda m: f'description: "{en}"', text, count=1, flags=re.M)
+          assert n == 1, "SKILL.md 里没找到 description 行"
+          open(md, "w", encoding="utf-8").write(new)
+          PY
+          python3 check_skillmd.py "$SKILL_DIR"
+          npm i -g clawhub
+          clawhub login --token "$CLAWHUB_TOKEN"
+          clawhub skill publish "$SKILL_DIR" \
+            --slug excelrouter \
+            --version "$VERSION" \
+            --name "Excel拆分合并、表格拆分汇总、PDF加密分发 — ExcelRouter" \
+            --changelog "Sync core (ExcelRouter)" \
+            --categories productivity \
+            --topics "excel,pdf,split,merge,encryption"
+          # ↑ ClawHub 最多 5 个 topics；v3.0.0 发版时写了 6 个被拒（continue-on-error 吞成绿 ✓）
