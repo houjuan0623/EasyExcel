@@ -298,7 +298,7 @@ def _sheet_heads(file_path, config):
                 continue
             head = _trim_tail(_key_row(r) for r in islice(it, limit))
             h = resolve_header_row(head, config)
-            names = _header_names(head[h - 1]) if 0 < h <= len(head) else []
+            names = col_names(head, h) if 0 < h <= len(head) else []
             yield sn, h, names, head, it
     finally:
         sheets.close()
@@ -1029,6 +1029,12 @@ def process_file(file_path, rel_path, output_root, config, outputs,
 
         # ---------- 逐 sheet 识别表头 ----------
         limit = _head_limit(config)
+        # 取值预览读取原始 XML，而完整加载会清除合并区域内非锚点的值。
+        # 复用预览的有限表头扫描，避免同一文件在执行时换行或丢掉纵向合并的字段。
+        scanned_headers = {}
+        if not is_xls:
+            for name, header, names, head, _rows in _sheet_heads(file_path, config):
+                scanned_headers[name] = (header, names, head)
         hid = hidden_info(file_path)     # {sheet 名: (状态, {隐藏列号})}，xlsx 和 xls 同一套规则
         sheets = []        # [(sheet 名, ws, 表头行号, 最后一行有内容的行号, 表头行的列名)]
         cols = {}          # sheet 名 -> (每一列的列键, 列名)：跨文件合并时按列名对齐（见 _OutputBook.place）
@@ -1051,11 +1057,15 @@ def process_file(file_path, rel_path, output_root, config, outputs,
                 if log_fn:
                     log_fn(f"  🙈 sheet「{ws.title}」是隐藏的，照样发出（产出里能看见）")
             last = _last_data_row(ws)
-            head = [_key_row(r) for r in ws.iter_rows(min_row=1, max_row=min(last, limit),
-                                                       values_only=True)] if last else []
-            h = resolve_header_row(head, config)
+            if ws.title in scanned_headers:
+                h, names, head = scanned_headers[ws.title]
+            else:
+                head = [_key_row(r) for r in ws.iter_rows(min_row=1, max_row=min(last, limit),
+                                                           values_only=True)] if last else []
+                h = resolve_header_row(head, config)
+                names = col_names(head, h) if 0 < h <= len(head) else []
             if h != -1 and h <= last and h <= len(head):
-                sheets.append((ws.title, ws, h, last, _header_names(head[h - 1])))
+                sheets.append((ws.title, ws, h, last, names))
                 names_full = col_names(head, h)
                 names_full += [""] * (ws.max_column - len(names_full))
                 tpl_names[ws.title] = list(names_full)

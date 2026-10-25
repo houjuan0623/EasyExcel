@@ -225,7 +225,7 @@ def run_job(request, cancelled, report):
     else:
         output = splitter.run_split(config, log_fn=log, progress_fn=progress, stop_flag=cancelled.is_set)
     stopped = bool(summary.get("stopped")) or cancelled.is_set()
-    if not output and not stopped:
+    if not stopped and (not output or (mode == "split" and summary.get("files") == 0)):
         raise ValueError("没有生成结果，请查看处理日志并检查所选工作表")
     return {"output": output or "", "summary": summary, "stopped": stopped}
 

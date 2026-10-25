@@ -20,6 +20,72 @@ from core.splitter import list_values, run_split
 from desktop import bridge
 
 
+@pytest.mark.parametrize('header_row', [None, 4])
+def test_merged_header_detection_agrees_between_groups_and_split(tmp_path, header_row):
+    """Some writers retain labels inside vertically merged cells in the XLSX XML."""
+    from io import BytesIO
+    from zipfile import ZipFile, ZIP_DEFLATED
+    from xml.etree import ElementTree as ET
+
+    path = tmp_path / 'merged-headers.xlsx'
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '明细'
+    ws.append(['演示报表'])
+    ws.merge_cells('A1:C1')
+    ws.append([])
+    ws.append(['部门', '基数', '计算'])
+    ws.append([])
+    for column in 'ABC':
+        ws.merge_cells(f'{column}3:{column}4')
+    for row, group in enumerate(['甲组', '乙组', '甲组', '乙组'], 5):
+        ws.append([group, row, f'=B{row}*2'])
+    wb.save(path)
+    wb.close()
+    ns = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    with ZipFile(BytesIO(path.read_bytes())) as source, ZipFile(path, 'w', ZIP_DEFLATED) as target:
+        for entry in source.infolist():
+            content = source.read(entry)
+            if entry.filename == 'xl/worksheets/sheet1.xml':
+                tree = ET.fromstring(content)
+                data = tree.find(ns + 'sheetData')
+                header = next(row for row in data if row.get('r') == '4')
+                for col, text in zip('ABC', ['部门', '基数', '计算']):
+                    cell = ET.SubElement(header, ns + 'c', {'r': col + '4', 't': 'inlineStr'})
+                    ET.SubElement(ET.SubElement(cell, ns + 'is'), ns + 't').text = text
+                for cell in data.iter(ns + 'c'):
+                    if cell.find(ns + 'f') is not None:
+                        cell.find(ns + 'v').text = str(int(cell.get('r')[1:]) * 2)
+                content = ET.tostring(tree, encoding='utf-8')
+            target.writestr(entry, content)
+    before = path.read_bytes()
+    assert bridge.inspect_source({'path': str(path), 'headerRow': header_row})['workbooks'][0]['sheets'][0]['headerRow'] == 4
+    req = request(path, tmp_path / 'out', ['明细'], headerRow=header_row, keepFormulas=True, bundleSheets=True)
+    assert bridge.groups(req) == {'values': ['乙组', '甲组'], 'missing': []}
+    result = bridge.run_job(req, threading.Event(), lambda _: None)
+    assert result['summary']['files'] == 2
+    assert result['summary']['rows'] == 4
+    assert result['summary']['bundle_sheets'] == 2
+    for output in Path(result['output']).glob('*.xlsx'):
+        book = openpyxl.load_workbook(output)
+        sheet = book['明细']
+        assert str(sheet.merged_cells) == str(openpyxl.worksheet.cell_range.MultiCellRange('A1:C1 A3:A4 B3:B4 C3:C4'))
+        assert [sheet.cell(r, 3).value for r in (5, 6)] == ['=B5*2', '=B6*2']
+        book.close()
+    assert path.read_bytes() == before
+
+
+def test_empty_split_is_not_reported_as_success(workbook, tmp_path, monkeypatch):
+    def empty_split(config, log_fn, **kwargs):
+        out = tmp_path / 'empty-results'
+        out.mkdir()
+        log_fn('[SUMMARY] ' + json.dumps({'files': 0, 'rows': 0, 'stopped': False}))
+        return str(out)
+    monkeypatch.setattr(bridge.splitter, 'run_split', empty_split)
+    with pytest.raises(ValueError, match='没有生成结果'):
+        bridge.run_job(request(workbook, tmp_path / 'out'), threading.Event(), lambda _: None)
+
+
 @pytest.fixture
 def workbook(tmp_path):
     """三个可见 Sheet（一个结构不同），一个隐藏 Sheet，另有一个空白 Sheet。"""

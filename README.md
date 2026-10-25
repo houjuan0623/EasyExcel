@@ -2,7 +2,9 @@
 
 <img src="desktop/assets/app.png" width="72" height="72" alt="EasyExcel 图标" />
 
-**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.6.1**，面向 Windows x64。
+**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.6.2**，面向 Windows x64。
+
+0.6.2 修复复杂合并表头在字段预览和实际拆分时识别不一致的问题，保留纵向合并字段，并在未生成分表时明确报错。
 
 ## 功能
 
@@ -40,7 +42,7 @@ npm run dev
 npm run dist:portable
 ```
 
-生成 `desktop/release/EasyExcel-Portable-0.6.1-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
+生成 `desktop/release/EasyExcel-Portable-0.6.2-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
 
 `npm run dist:win` 可生成安装程序；`npm run build` 只编译界面。详细说明见 [桌面版文档](desktop/README.md)。构建产物和依赖目录不提交到 Git。
 
