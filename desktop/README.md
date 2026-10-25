@@ -2,7 +2,7 @@
 
 Electron + React + TypeScript 只负责界面、系统文件对话框和进程通信。**读取工作簿、获取 Sheet、预览单元格、统计分组、拆分和汇总全部由 Python 完成**，沿用根目录 `core/` 的处理引擎。没有 JavaScript Excel 库，也没有远程接口。
 
-0.3.1 起使用 EasyExcel 名称和用户提供的头像图标。窗口、界面、可执行文件、安装快捷方式与压缩包统一使用新名称。为兼容旧版本，用户数据仍保存在 `%APPDATA%/excelrouter-desktop`，原脚本库、历史记录、编辑草稿以及旧版 JSON 备份继续可用。
+0.3.1 起使用 EasyExcel 名称；0.6.1 起图标更新为绿色表格与字母 E 结合的专属 Logo，统一用于界面、窗口、可执行文件与安装快捷方式。为兼容旧版本，用户数据仍保存在 `%APPDATA%/excelrouter-desktop`，原脚本库、历史记录、编辑草稿以及旧版 JSON 备份继续可用。
 
 图标资源和重新转换说明见 [assets/README.md](assets/README.md)。
 
@@ -54,14 +54,14 @@ npm run dist:win
 
 ```text
 desktop/release/
-├── EasyExcel-Setup-0.6.0-x64.exe    可分发的完整安装程序
+├── EasyExcel-Setup-0.6.1-x64.exe    可分发的完整安装程序
 └── win-unpacked/
     └── EasyExcel.exe              打包后程序，可直接运行验证
 ```
 
 安装包名称中的版本来自 `desktop/package.json`。后续修改代码后，在 `desktop` 中重新执行 `npm run dist:win` 即可。`npm run pack:win` 只生成 `win-unpacked` 目录，省略安装程序。
 
-**安装与分发：**将 `EasyExcel-Setup-0.6.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
+**安装与分发：**将 `EasyExcel-Setup-0.6.1-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
 
 Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyExcelBackend.exe` 及同目录依赖。安装版使用该内置引擎，不依赖 `EXCELROUTER_PYTHON` 或系统 PATH。安装包目前未做代码签名，Windows 可能显示“未知发布者”；正式公开分发时可配置自己的签名证书。
 
@@ -79,7 +79,7 @@ Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyE
 npm run dist:portable
 ```
 
-输出 `desktop/release/EasyExcel-Portable-0.6.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
+输出 `desktop/release/EasyExcel-Portable-0.6.1-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
 
 请保留解压后的全部文件，不要只复制 `.exe`，也不要直接在压缩包内运行。最近任务记录仍保存在当前 Windows 用户的应用数据目录；移动程序文件夹不会迁移这些记录。
 

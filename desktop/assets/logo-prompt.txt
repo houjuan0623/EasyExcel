@@ -1,0 +1,18 @@
+EasyExcel 0.6.1 logo
+Mode: built-in image_gen (imagegen skill)
+
+Generation prompt:
+Use case: logo-brand
+Asset type: final production Windows desktop application icon for EasyExcel, an offline spreadsheet and Python analysis workbench.
+Primary request: Create ONE polished, original, memorable app icon. A bold geometric white E monogram subtly constructed from spreadsheet rows and cells, with a small mint-green cell accent suggesting multiple sheets and organized data. The silhouette must read instantly at 24x24 pixels. Keep the main symbol large, simple, balanced, and optically centered.
+Style/medium: premium minimal vector-like raster artwork, crisp clean edges, precise geometric alignment, restrained subtle shading only. Flat front-facing view; no perspective or 3D extrusion.
+Color palette: deep emerald and jade green rounded-square tile, ivory-white main mark, restrained light mint accent. Match a calm professional green desktop productivity interface.
+Composition/framing: square 1024x1024 canvas; the rounded-square app tile occupies about 92 percent of the canvas; generous but not excessive inner padding; consistent rounded corners and bold geometry. True transparent pixels outside the tile, no external drop shadow. One icon only, no presentation board.
+Text: no wordmark, no software name, no tagline, no small lettering. The E is a geometric symbol, not a typed label.
+Constraints: original design; no Microsoft Excel X logo, no Python snake, no portrait, no chart axes, no tiny grid lines, no locks or shields, no sparkle decorations, no mockup, no watermark. Use a genuinely transparent background outside the rounded square.
+
+Transparency cleanup prompt:
+Use case: background-extraction
+Edit target: the attached EasyExcel app icon.
+Keep the existing emerald rounded-square tile, white geometric E/table mark, mint accent, composition, proportions, and colors exactly unchanged.
+Only clean the outer transparency boundary: remove every stray green pixel, speck, halo, and disconnected fragment outside the single rounded-square tile, especially at the top edge and left edge. The outer silhouette must be a perfectly clean smoothly antialiased rounded square. Every pixel beyond that silhouette must have alpha zero. Do not erase or recolor the interior, do not add shadows, text, outlines, or padding. Keep the transparent background and square canvas. Output one finished transparent PNG suitable for a Windows app icon.

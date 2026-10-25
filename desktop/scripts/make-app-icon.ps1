@@ -1,16 +1,16 @@
 # Copyright (c) 2026 AbeLin · MIT License
 param(
     [Parameter(Mandatory = $true)][string]$Source,
-    [int]$CropX = 8,
-    [int]$CropY = 70,
-    [int]$CropSize = 890
+    [int]$CropX = 0,
+    [int]$CropY = 0,
+    [int]$CropSize = 0
 )
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 $destination = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../assets'))
 [System.IO.Directory]::CreateDirectory($destination) | Out-Null
-$photo = [System.Drawing.Image]::FromFile((Resolve-Path -LiteralPath $Source).Path)
+$sourceImage = [System.Drawing.Image]::FromFile((Resolve-Path -LiteralPath $Source).Path)
 
 function New-IconFrame([int]$Size) {
     $bitmap = [System.Drawing.Bitmap]::new($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -19,7 +19,7 @@ function New-IconFrame([int]$Size) {
         $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
         $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
         $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-        $graphics.DrawImage($photo, [System.Drawing.Rectangle]::new(0, 0, $Size, $Size), $CropX, $CropY, $CropSize, $CropSize, [System.Drawing.GraphicsUnit]::Pixel)
+        $graphics.DrawImage($sourceImage, [System.Drawing.Rectangle]::new(0, 0, $Size, $Size), $CropX, $CropY, $CropSize, $CropSize, [System.Drawing.GraphicsUnit]::Pixel)
         return $bitmap
     } catch {
         $bitmap.Dispose()
@@ -28,7 +28,13 @@ function New-IconFrame([int]$Size) {
 }
 
 try {
-    if ($CropX -lt 0 -or $CropY -lt 0 -or $CropSize -lt 1 -or ($CropX + $CropSize) -gt $photo.Width -or ($CropY + $CropSize) -gt $photo.Height) {
+    # 默认保留完整方形 Logo；非方形输入居中裁切，也支持显式指定裁切区域。
+    if ($CropSize -eq 0) {
+        $CropSize = [Math]::Min($sourceImage.Width, $sourceImage.Height)
+        $CropX = [int][Math]::Floor(($sourceImage.Width - $CropSize) / 2)
+        $CropY = [int][Math]::Floor(($sourceImage.Height - $CropSize) / 2)
+    }
+    if ($CropX -lt 0 -or $CropY -lt 0 -or $CropSize -lt 1 -or ($CropX + $CropSize) -gt $sourceImage.Width -or ($CropY + $CropSize) -gt $sourceImage.Height) {
         throw '裁切范围超出原图。'
     }
     $preview = New-IconFrame 512
@@ -64,4 +70,4 @@ try {
         foreach ($frameBytes in $frames) { $writer.Write($frameBytes) }
     } finally { $writer.Dispose(); $stream.Dispose() }
     [PSCustomObject]@{ Png = (Join-Path $destination 'app.png'); Icon = (Join-Path $destination 'app.ico'); Sizes = $sizes } | ConvertTo-Json
-} finally { $photo.Dispose() }
+} finally { $sourceImage.Dispose() }

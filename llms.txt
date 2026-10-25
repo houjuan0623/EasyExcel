@@ -2,7 +2,7 @@
 
 ## 当前仓库桌面版 / Current desktop
 
-EasyExcel 0.6.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
+EasyExcel 0.6.1 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
 仓库：https://github.com/houjuan0623/EasyExcel。Electron + TypeScript 只负责界面，Python 负责所有 Excel 读取、处理和绘图。
 免安装 ZIP 完整解压后启动 EasyExcel.exe；内置 Electron、Python 和离线分析库，不要求安装 Microsoft Excel。
 

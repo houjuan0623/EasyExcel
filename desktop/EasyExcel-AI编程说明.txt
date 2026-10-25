@@ -1,5 +1,5 @@
 EasyExcel 离线 Python 编程说明（可直接发给 AI）
-适用软件：EasyExcel 0.6.0，Windows x64 免安装版
+适用软件：EasyExcel 0.6.1，Windows x64 免安装版
 清单依据：当前免安装包中的“resources/backend/离线依赖清单.json”和工作台实际接口。
 
 请阅读以下运行环境和接口约束，再根据文末“本次需求”生成代码。

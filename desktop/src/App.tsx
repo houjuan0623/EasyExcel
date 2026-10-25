@@ -12,6 +12,7 @@ import SheetPreview from './SheetPreview';
 import CodeWorkspace from './CodeWorkspace';
 import PrivacyExport from './PrivacyExport';
 import appIcon from '../assets/app.png';
+import { version as appVersion } from '../package.json';
 
 const api = window.desktop;
 const keyOf = (path: string, sheet: string) => JSON.stringify([path, sheet]);
@@ -249,7 +250,7 @@ export default function App() {
       <div className="sidebar-bottom">
         <div className="privacy-note"><span className="privacy-icon"><ShieldCheck size={20} /></span><strong>文件，留在你的电脑</strong><p>所有表格均在本地处理<br />无需上传，安心使用</p><span className="offline-pill"><span />100% 本地运行</span></div>
         <button className="nav-item help-button" onClick={() => setHelp(true)}><CircleHelp size={18} /><span>使用帮助</span><ArrowUpRight size={15} /></button>
-        <div className="sidebar-footer"><span>EasyExcel Desktop</span><span className="version">0.6.0</span></div>
+        <div className="sidebar-footer"><span>EasyExcel Desktop</span><span className="version">{appVersion}</span></div>
       </div>
     </aside>
 
