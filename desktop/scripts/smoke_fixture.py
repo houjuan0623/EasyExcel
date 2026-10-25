@@ -190,7 +190,28 @@ def verify_privacy(directory):
     print(json.dumps({'exportId': schema['id']}))
 
 
+def verify_vba(directory):
+    """验证打包界面生成的 VBA 包保留原名称与原公式，清除业务数据。"""
+    with ZipFile(directory / 'VBA结构包.zip') as archive:
+        schema = json.loads(archive.read('结构说明.json'))
+        assert schema['mode'] == 'vba' and schema['formulasUnchanged'] is True
+        assert 'ThisWorkbook' in archive.read('给AI的VBA编程说明.txt').decode('utf-8')
+        wb = openpyxl.load_workbook(BytesIO(archive.read(schema['workbooks'][0]['template'])))
+        original = openpyxl.load_workbook(directory/'2026年销售明细.xlsx')
+        assert wb.sheetnames == original.sheetnames
+        assert wb['9月销售明细']['A1'].value == original['9月销售明细']['A1'].value
+        assert wb['9月销售明细']['A2'].value is None
+        for before, after in zip(original, wb):
+            for row in before:
+                for cell in row:
+                    if cell.data_type == 'f':
+                        assert after[cell.coordinate].value == cell.value
+        wb.close()
+        original.close()
+    print(json.dumps({'originalNamesPreserved': True}))
+
+
 if __name__ == "__main__":
     directory = Path(sys.argv[2])
     directory.mkdir(parents=True, exist_ok=True)
-    {'create': create, 'verify': verify, 'privacy': verify_privacy}[sys.argv[1]](directory)
+    {'create': create, 'verify': verify, 'privacy': verify_privacy, 'vba': verify_vba}[sys.argv[1]](directory)

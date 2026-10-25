@@ -113,13 +113,25 @@ export interface HistoryItem extends JobResult {
 export interface LibraryCapability { name: string; version: string; importName: string; purpose: string; example: string }
 export interface CodeEnvironment { python: string; libraries: Record<string, string>; capabilities: LibraryCapability[] }
 export interface CodeRequest extends SelectionRequest { code: string; outputPath: string; timeoutSeconds: number; scriptName?: string }
-export type PrivacyMode = 'synthetic' | 'blank' | 'schema';
+export type PrivacyMode = 'vba' | 'synthetic' | 'blank' | 'schema';
+export interface VbaSheetPlan {
+  id: string; source: string; name: string; state: string; headerRanges: string;
+  headers: { cell: string; value: string; type: string }[];
+  formulaCount: number; dataExtent: string; tableCount: number;
+  codeName: string; tables: { name: string; displayName: string; ref: string; columns: { name: string; id: string }[] }[];
+}
+export interface VbaReviewItem { kind: string; value: string; count: number; locations: string[]; formula: string }
 export interface PrivacyPlan {
   token: string; kinds: Record<string, string>;
   tables: { id: string; source: string; fields: { id: string; name: string; column: number; index: number; kind: string }[] }[];
+  vba?: {
+    workbooks: { id: string; name: string; sheets: VbaSheetPlan[]; definedNames: { name: string; formula: string; localSheetId?: string }[]; externalLinks: { index: number; target: string }[] }[];
+    review: VbaReviewItem[]; formulaCount: number; scope: string;
+  };
 }
-export interface PrivacyRequest extends SelectionRequest { token: string; mode: PrivacyMode; sampleRows: number; fieldKinds: Record<string, string[]> }
-export interface PrivacyResult { output: string; exportId: string; sheets: number; mode: PrivacyMode; sampleRows: number; warnings: string[] }
+export interface PrivacyInspectRequest extends SelectionRequest { mode?: PrivacyMode; headerRanges?: Record<string, string> }
+export interface PrivacyRequest extends PrivacyInspectRequest { token: string; mode: PrivacyMode; sampleRows: number; fieldKinds: Record<string, string[]>; reviewConfirmed?: boolean }
+export interface PrivacyResult { output: string; exportId: string; sheets: number; mode: PrivacyMode; sampleRows: number; warnings: string[]; workbooks?: number; formulaCount?: number }
 export type CodeOutput = { kind: 'image'; title: string; src: string } | {
   kind: 'table'; title: string; columns: string[]; rows: string[][]; index: string[]; totalRows: number; totalColumns: number;
 };
@@ -144,7 +156,7 @@ export interface DesktopAPI {
   chooseOutput(): Promise<string | null>;
   inspect(path: string, headerRow: number | null): Promise<SourceInfo>;
   preview(path: string, sheet: string, headerRow: number | null): Promise<Preview>;
-  privacyInspect(request: SelectionRequest): Promise<PrivacyPlan>;
+  privacyInspect(request: PrivacyInspectRequest): Promise<PrivacyPlan>;
   privacyExport(request: PrivacyRequest): Promise<PrivacyResult | null>;
   groups(request: SelectionRequest & { column: string }): Promise<GroupPreview>;
   start(request: RunRequest): Promise<string>;

@@ -31,4 +31,30 @@
 .privacy-success p { margin: 7px 0; overflow-wrap: anywhere; color: #64836e; }
 .privacy-actions { flex-shrink: 0; padding: 16px 22px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .privacy-actions > span { font-size: 11px; color: #829187; }
+.privacy-options label:only-child { flex: 1; }
+.vba-plan { font-size: 12px; line-height: 1.7; }
+.vba-plan h3 { display: flex; justify-content: space-between; gap: 12px; margin-top: 22px; }
+.vba-plan h3 span, .vba-plan > p, .vba-sheet-review p, .vba-formula-review > p { color: #6b8072; font-size: 11px; font-weight: normal; }
+.vba-workbook { border: 1px solid #dce7df; border-radius: 8px; padding: 0 12px 12px; margin: 14px 0; }
+.vba-workbook h4 { overflow-wrap: anywhere; }
+.vba-sheet-review { border-top: 1px solid #e4ebe6; padding: 10px 0; }
+.vba-sheet-review summary, .vba-names summary, .vba-review-item summary { cursor: pointer; overflow-wrap: anywhere; }
+.vba-sheet-review summary span { color: #7b8c80; font-size: 11px; margin-left: 10px; }
+.vba-range-label { display: block; margin-top: 12px; }
+.vba-plan input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; border: 1px solid #cbd9ce; border-radius: 6px; padding: 8px 10px; font: inherit; background: white; color: #304e3b; margin-top: 6px; }
+.vba-plan table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.vba-plan th { text-align: left; color: #63816c; background: #f2f7f4; }
+.vba-plan th:first-child, .vba-plan td:first-child { width: 85px; }
+.vba-plan th, .vba-plan td { border-bottom: 1px solid #e5ece7; padding: 6px 8px; }
+.vba-wrap { overflow-wrap: anywhere; white-space: pre-wrap; }
+.vba-pagination { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; color: #6b8072; }
+.vba-review-item { margin-top: 8px; border: 1px solid #e5dfcb; background: #fffdf6; padding: 9px 11px; border-radius: 6px; }
+.vba-review-item summary span { margin: 0 10px; color: #8a7a4f; }
+.vba-review-item code { display: block; margin-top: 5px; color: #77643a; white-space: pre-wrap; word-break: break-all; }
+.vba-review-item pre { font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+.vba-review-item ul { margin-bottom: 0; padding-left: 18px; overflow-wrap: anywhere; }
+.vba-names { margin-top: 12px; }
+.vba-names code { display: block; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.vba-review-confirm { display: flex; align-items: flex-start; gap: 10px; margin-top: 20px; padding: 14px; border: 1px solid #bfd3c4; border-radius: 8px; background: #f2f8f4; }
+.vba-review-confirm input { flex-shrink: 0; margin-top: 4px; }
 @media (max-width: 1190px) { .privacy-export-card { flex-wrap: wrap; padding: 14px; } .privacy-export-card p { font-size: 10px; } }

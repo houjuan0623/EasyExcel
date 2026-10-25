@@ -145,7 +145,7 @@ function registerHandlers() {
     const result = await dialog.showOpenDialog(window, {
       title: kind === 'file' ? '选择 Excel 工作簿' : '选择 Excel 文件夹',
       properties: [kind === 'file' ? 'openFile' : 'openDirectory'],
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx', 'xls'] }],
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx', 'xlsm', 'xls'] }],
     });
     return result.canceled ? null : result.filePaths[0];
   });
@@ -166,8 +166,8 @@ function registerHandlers() {
   }
   handle('privacy:export', async (request: PrivacyRequest) => {
     if (active) throw new Error('已有任务正在运行');
-    if (!request || !['synthetic', 'blank', 'schema'].includes(request.mode)) throw new Error('请选择脱敏导出内容');
-    const destination = await dialog.showSaveDialog(window, { title: '保存给 AI 的脱敏包', defaultPath: 'EasyExcel-AI演示包.zip', filters: [{ name: '脱敏演示包', extensions: ['zip'] }] });
+    if (!request || !['vba', 'synthetic', 'blank', 'schema'].includes(request.mode)) throw new Error('请选择脱敏导出内容');
+    const destination = await dialog.showSaveDialog(window, { title: '保存给 AI 的编程资料', defaultPath: request.mode === 'vba' ? 'EasyExcel-VBA结构包.zip' : 'EasyExcel-AI演示包.zip', filters: [{ name: 'AI 编程资料包', extensions: ['zip'] }] });
     if (destination.canceled || !destination.filePath) return null;
     if (active) throw new Error('已有任务正在运行');
     const id = randomUUID();

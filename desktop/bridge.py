@@ -17,7 +17,7 @@ from core.xlio import _head_limit, col_names, resolve_header_row  # noqa: E402
 from desktop.preview import read_preview  # noqa: E402
 import openpyxl  # noqa: E402
 
-EXTENSIONS = {".xlsx", ".xls"}
+EXTENSIONS = {".xlsx", ".xlsm", ".xls"}
 SKIP_DIRS = {"拆分结果", "汇总结果", "node_modules", ".git", ".venv"}
 PROTOCOL_OUT = sys.stdout
 
@@ -39,7 +39,7 @@ def source_files(source):
     path = Path(source).expanduser().resolve(strict=True)
     if path.is_file():
         if path.suffix.lower() not in EXTENSIONS or path.name.startswith("~$"):
-            raise ValueError("请选择 .xlsx 或 .xls 文件")
+            raise ValueError("请选择 .xlsx、.xlsm 或 .xls 文件")
         return path, [path]
     files = []
     for root, dirs, names in os.walk(path):
@@ -262,7 +262,7 @@ def main():
             result = groups(request)
         elif command == "privacy_inspect":
             from desktop.privacy_export import inspect_privacy
-            result = inspect_privacy(selection_config(request))
+            result = inspect_privacy(selection_config(request), request)
         elif command == "privacy_export":
             from desktop.privacy_export import export_privacy
             result = export_privacy(request, selection_config(request))

@@ -113,8 +113,11 @@ def plan_public_local(tables):
     return {'token': token, 'tables': plans, 'kinds': KINDS}
 
 
-def inspect_privacy(config):
+def inspect_privacy(config, request=None):
     """准备字段类型选择，界面不展示或传回真实数据样本。"""
+    if request and request.get('mode') == 'vba':
+        from desktop.vba_export import inspect_vba
+        return inspect_vba(config, request)
     with ExitStack() as stack:
         return plan_public_local(_prepare(config, stack))
 
@@ -261,6 +264,9 @@ load_ai_context 会核对文件、Sheet、表头和列结构；换电脑需要�
 
 def export_privacy(request, config):
     """原子输出对外 ZIP；包含真实对应关系的映射单独保存在本机。"""
+    if request.get('mode') == 'vba':
+        from desktop.vba_export import export_vba
+        return export_vba(request, config)
     mode, count = request.get('mode'), request.get('sampleRows')
     if mode not in MODES or type(count) is not int or count not in (5, 20, 50):
         raise ValueError('请选择导出内容及 5、20 或 50 行演示数据')

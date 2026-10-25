@@ -2,7 +2,7 @@
 
 ## 当前仓库桌面版 / Current desktop
 
-EasyExcel 0.6.1 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
+EasyExcel 0.7.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
 仓库：https://github.com/houjuan0623/EasyExcel。Electron + TypeScript 只负责界面，Python 负责所有 Excel 读取、处理和绘图。
 免安装 ZIP 完整解压后启动 EasyExcel.exe；内置 Electron、Python 和离线分析库，不要求安装 Microsoft Excel。
 
@@ -14,7 +14,10 @@ Python 编辑器支持离线脚本导入、运行、表格/绘图结果和脚本
 numpy-financial、PyXIRR、SciPy、statsmodels、Seaborn、XlsxWriter、Babel、QuantLib 与 decimal。
 
 边界：图表由 Python 离线重绘，不保证与 Excel 逐像素一致。三维图、SmartArt、复杂条件公式和旧 .xls 图表暂不支持。
-严格脱敏导出：默认匿名字段与固定 20 行完全虚构样例，可选 5/50 行、空白结构或仅字段说明。不按真实值/类别/统计/数量/分布取样。
+VBA 原表结构导出（默认）：.xlsx/.xlsm 的原 Sheet 名、原表头、原位置和全部单元格公式不改写，保留表对象和命名区域；表头区域外的常量、统计缓存与原 VBA 移除。
+导出前在本机核对表头范围、公式固定值、外部引用并确认。包含所有 Sheet（含隐藏结构），保留原行列范围；名称、表头及公式固定值会随包导出，不是完全匿名。
+结构包指导 AI 使用 ThisWorkbook 在原表定位、运行时确定真实数据范围、保留公式列；附完整结构说明和有限表头检查 .bas。实际业务逻辑须在原表副本验证，本软件不运行 VBA。
+Python 严格匿名模式：选择后默认匿名字段与固定 20 行完全虚构样例，可选 5/50 行、空白结构或仅字段说明。不按真实值/类别/统计/数量/分布取样。
 表头布局、列宽和可转换的代表性公式保留，跨行范围规范为演示范围，原常量只存本机映射；图片、图表/透视缓存、批注、外部关系和原元数据不复制。
 AI 通过 ZIP 内的匿名结构写代码，回到原离线机用 load_ai_context(导出标识) 获取匿名列名的真实数据与原参数。不得上传本机映射目录、原表、日志和分析结果。
 这不是对原表全部布局/公式的无损复制，不能从虚构样例推断真实结论；仅支持 .xlsx、32 个 Sheet、每表 256 列、前 100 行内的表头。
