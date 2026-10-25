@@ -260,6 +260,12 @@ def main():
             result = preview_sheet(request)
         elif command == "groups":
             result = groups(request)
+        elif command == "privacy_inspect":
+            from desktop.privacy_export import inspect_privacy
+            result = inspect_privacy(selection_config(request))
+        elif command == "privacy_export":
+            from desktop.privacy_export import export_privacy
+            result = export_privacy(request, selection_config(request))
         elif command == "code_environment":
             from desktop.code_runner import environment
             result = environment()

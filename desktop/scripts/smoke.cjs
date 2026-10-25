@@ -74,6 +74,19 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('.preview-tab')?.textContent.includes('9月销售明细') && !document.querySelector('.run-button').disabled);
     await page.getByRole('cell', { name: 'SO-090001', exact: true }).waitFor();
     await page.waitForFunction(() => !document.querySelector('.run-button').disabled && !document.querySelector('.group-heading .spin'));
+    const privacyZip = join(scratch, 'AI演示包.zip');
+    await app.evaluate(({ dialog }, savePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: savePath }); }, privacyZip);
+    await page.getByRole('button', { name: '脱敏导出', exact: true }).click();
+    const privacy = page.getByRole('dialog', { name: '严格脱敏导出', exact: true });
+    await privacy.getByLabel('Sheet_001 字段_003 演示类型', { exact: true }).selectOption('name');
+    assert.equal(await privacy.getByLabel('脱敏导出内容', { exact: true }).inputValue(), 'synthetic');
+    await page.screenshot({ path: join(scratch, '17-privacy-design.png') });
+    await privacy.getByRole('button', { name: '生成脱敏包 .zip', exact: true }).click();
+    await privacy.getByText('脱敏包已生成，只分享这个 ZIP', { exact: true }).waitFor({ timeout: 60000 });
+    const privacyVerified = fixture('privacy');
+    assert.ok(existsSync(join(scratch, 'app-data', 'privacy-mappings', privacyVerified.exportId + '.json')));
+    await page.screenshot({ path: join(scratch, '18-privacy-exported.png') });
+    await privacy.getByRole('button', { name: '关闭脱敏导出', exact: true }).click();
     await page.screenshot({ path: join(scratch, '02-selected.png') });
     await page.locator('.preview-card').scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(scratch, '05-data-preview.png') });
@@ -272,6 +285,17 @@ async function main() {
     await library.getByRole('button', { name: '载入编辑器', exact: true }).waitFor();
     await page.screenshot({ path: join(scratch, '11-script-library.png') });
     await library.getByRole('button', { name: '关闭脚本库', exact: true }).click();
+    // AI 使用匿名列写代码；实际运行由本机映射取得真实数据，且无需把映射交给 AI。
+    await page.locator('.sheet-toolbar').getByRole('button', { name: '清空', exact: true }).click();
+    await page.getByRole('checkbox', { name: '选择 2026年销售明细.xlsx / 9月销售明细', exact: true }).check();
+    const privacyScript = join(scratch, '匿名数据分析.py');
+    writeFileSync(privacyScript, `ai_tables, ai_params = load_ai_context(${JSON.stringify(privacyVerified.exportId)})\nreal = ai_tables['Sheet_001']\nassert real.shape == (24, 6)\nassert real.iloc[0, 0] == 'SO-090001'\nassert list(real.columns) == [f'字段_{i:03d}' for i in range(1, 7)]\nassert real['字段_005'].sum() == 127320\nprint('AI_CONTEXT_OK')\n`, 'utf8');
+    await app.evaluate(({ dialog }, scriptPath) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [scriptPath] }); }, privacyScript);
+    await page.getByRole('button', { name: '导入 .py', exact: true }).click();
+    await page.getByRole('button', { name: '运行代码', exact: true }).click();
+    await page.getByText('脚本运行完成', { exact: true }).waitFor({ timeout: 60000 });
+    await page.getByRole('button', { name: '运行日志', exact: true }).click();
+    assert.ok((await page.locator('.code-logs').textContent()).includes('AI_CONTEXT_OK'));
 
     // Preserve a previously unrun editor draft when loading a library item.
     const unsavedDraft = 'print("未运行草稿，请保留")';

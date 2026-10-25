@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { CodeEvent, CodeRequest, CodeResult, HistoryItem, JobEvent, JobResult, RunRequest } from '../shared/types';
+import type { CodeEvent, CodeRequest, CodeResult, HistoryItem, JobEvent, JobResult, PrivacyRequest, PrivacyResult, RunRequest } from '../shared/types';
 import { callPython, desktopRoot, stopPython, terminatePython } from './python';
 import { ScriptLibrary } from './script-library';
 
@@ -108,7 +108,7 @@ function registerHandlers() {
     const started = Date.now();
     let output = '';
     let stopped: 'stopped' | 'timeout' | null = null;
-    const run = callPython<CodeResult>({ ...request, command: 'code' }, (event) => {
+    const run = callPython<CodeResult>({ ...request, command: 'code', privacyMappingDir: join(userData, 'privacy-mappings') }, (event) => {
       if (event.type === 'started' && event.output) { output = event.output; allowedOutputs.add(resolve(output)); }
       if (event.type === 'log' || event.type === 'output') sendCode({ jobId: id, type: event.type, message: event.message, data: event.data });
     });
@@ -153,7 +153,7 @@ function registerHandlers() {
     const result = await dialog.showOpenDialog(window, { title: '选择结果保存位置', properties: ['openDirectory', 'createDirectory'] });
     return result.canceled ? null : result.filePaths[0];
   });
-  for (const command of ['inspect', 'preview', 'groups']) {
+  for (const command of ['inspect', 'preview', 'groups', 'privacy_inspect']) {
     handle(`excel:${command}`, async (request: Record<string, unknown>) => {
       if (!request || typeof request !== 'object') throw new Error('请求格式无效');
       // 新选择替换旧查询，避免快速切换 Sheet 时积压 Python 子进程。
@@ -164,6 +164,22 @@ function registerHandlers() {
       finally { if (reads.get(command) === run.child) reads.delete(command); }
     });
   }
+  handle('privacy:export', async (request: PrivacyRequest) => {
+    if (active) throw new Error('已有任务正在运行');
+    if (!request || !['synthetic', 'blank', 'schema'].includes(request.mode)) throw new Error('请选择脱敏导出内容');
+    const destination = await dialog.showSaveDialog(window, { title: '保存给 AI 的脱敏包', defaultPath: 'EasyExcel-AI演示包.zip', filters: [{ name: '脱敏演示包', extensions: ['zip'] }] });
+    if (destination.canceled || !destination.filePath) return null;
+    if (active) throw new Error('已有任务正在运行');
+    const id = randomUUID();
+    const run = callPython<PrivacyResult>({ ...request, command: 'privacy_export', outputPath: destination.filePath,
+      exportId: id, mappingDir: join(userData, 'privacy-mappings') });
+    active = { id, child: run.child };
+    try {
+      const result = await run.promise;
+      allowedOutputs.add(resolve(result.output));
+      return result;
+    } finally { if (active?.id === id) active = null; }
+  });
   handle('job:start', (request: RunRequest) => {
     if (active) throw new Error('已有任务正在运行');
     if (!request || !['split', 'merge'].includes(request.mode)) throw new Error('请求格式无效');

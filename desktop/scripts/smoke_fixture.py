@@ -6,6 +6,8 @@ import datetime
 import json
 from pathlib import Path
 import sys
+from io import BytesIO
+from zipfile import ZipFile
 
 import openpyxl
 from openpyxl.cell.rich_text import CellRichText, TextBlock
@@ -169,7 +171,26 @@ def verify(directory):
     print(json.dumps({"files": len(files), "rows": total}))
 
 
+def verify_privacy(directory):
+    """展开实际 UI 生成的包，检查演示行数、匿名字段与敏感信息缺席。"""
+    with ZipFile(directory / 'AI演示包.zip') as archive:
+        schema = json.loads(archive.read('结构说明.json'))
+        assert schema['mode'] == 'synthetic' and schema['sampleRows'] == 20
+        assert schema['tables'][0]['id'] == 'Sheet_001'
+        with ZipFile(BytesIO(archive.read('虚构演示.xlsx'))) as inner:
+            raw = ''.join(inner.read(name).decode('utf-8') for name in inner.namelist())
+            for private in ('2026年销售明细', '9月销售明细', '负责人1', 'SO-090001', '华东区域'):
+                assert private not in raw
+        wb = openpyxl.load_workbook(BytesIO(archive.read('虚构演示.xlsx')))
+        assert wb.active.max_row == 21 and wb.active.max_column == 6
+        assert wb.active['A1'].value == '字段_001'
+        assert wb.active['C2'].value == '示例姓名01'
+        assert wb.active['E2'].value == 1045
+        wb.close()
+    print(json.dumps({'exportId': schema['id']}))
+
+
 if __name__ == "__main__":
     directory = Path(sys.argv[2])
     directory.mkdir(parents=True, exist_ok=True)
-    (create if sys.argv[1] == "create" else verify)(directory)
+    {'create': create, 'verify': verify, 'privacy': verify_privacy}[sys.argv[1]](directory)

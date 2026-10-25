@@ -113,6 +113,13 @@ export interface HistoryItem extends JobResult {
 export interface LibraryCapability { name: string; version: string; importName: string; purpose: string; example: string }
 export interface CodeEnvironment { python: string; libraries: Record<string, string>; capabilities: LibraryCapability[] }
 export interface CodeRequest extends SelectionRequest { code: string; outputPath: string; timeoutSeconds: number; scriptName?: string }
+export type PrivacyMode = 'synthetic' | 'blank' | 'schema';
+export interface PrivacyPlan {
+  token: string; kinds: Record<string, string>;
+  tables: { id: string; source: string; fields: { id: string; name: string; column: number; index: number; kind: string }[] }[];
+}
+export interface PrivacyRequest extends SelectionRequest { token: string; mode: PrivacyMode; sampleRows: number; fieldKinds: Record<string, string[]> }
+export interface PrivacyResult { output: string; exportId: string; sheets: number; mode: PrivacyMode; sampleRows: number; warnings: string[] }
 export type CodeOutput = { kind: 'image'; title: string; src: string } | {
   kind: 'table'; title: string; columns: string[]; rows: string[][]; index: string[]; totalRows: number; totalColumns: number;
 };
@@ -137,6 +144,8 @@ export interface DesktopAPI {
   chooseOutput(): Promise<string | null>;
   inspect(path: string, headerRow: number | null): Promise<SourceInfo>;
   preview(path: string, sheet: string, headerRow: number | null): Promise<Preview>;
+  privacyInspect(request: SelectionRequest): Promise<PrivacyPlan>;
+  privacyExport(request: PrivacyRequest): Promise<PrivacyResult | null>;
   groups(request: SelectionRequest & { column: string }): Promise<GroupPreview>;
   start(request: RunRequest): Promise<string>;
   cancel(jobId: string): Promise<void>;

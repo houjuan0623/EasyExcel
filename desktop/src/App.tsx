@@ -10,6 +10,7 @@ import {
 import type { GroupPreview, HistoryItem, JobResult, Mode, Preview, SheetChoice, SheetInfo, SourceInfo } from '../shared/types';
 import SheetPreview from './SheetPreview';
 import CodeWorkspace from './CodeWorkspace';
+import PrivacyExport from './PrivacyExport';
 import appIcon from '../assets/app.png';
 
 const api = window.desktop;
@@ -86,6 +87,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [codeBusy, setCodeBusy] = useState(false);
+  const [privacyBusy, setPrivacyBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
@@ -154,7 +156,7 @@ export default function App() {
   const columns = useMemo(() => [...new Set(selectedSheets[0]?.columns.filter((name) => name && selectedSheets.every((sheet) => sheet.columns.includes(name))) || [])], [selectedSheets]);
   const queryKey = JSON.stringify({ inputPath, selection, column, headerRow, refresh });
   const groupsBusy = page === 'split' && !!column && selection.length > 0 && queryKey !== groupKey;
-  const locked = busy || codeBusy || reading;
+  const locked = busy || codeBusy || privacyBusy || reading;
   const eligibleCount = allSheets.filter((sheet) => sheet.selectable).length;
 
   useEffect(() => {
@@ -206,7 +208,7 @@ export default function App() {
     setResult(null);
   }
   function switchPage(next: typeof page) {
-    if (busy || codeBusy) return;
+    if (busy || codeBusy || privacyBusy) return;
     setPage(next); setError(''); setResult(null);
   }
   async function openResult(path: string) {
@@ -247,7 +249,7 @@ export default function App() {
       <div className="sidebar-bottom">
         <div className="privacy-note"><span className="privacy-icon"><ShieldCheck size={20} /></span><strong>文件，留在你的电脑</strong><p>所有表格均在本地处理<br />无需上传，安心使用</p><span className="offline-pill"><span />100% 本地运行</span></div>
         <button className="nav-item help-button" onClick={() => setHelp(true)}><CircleHelp size={18} /><span>使用帮助</span><ArrowUpRight size={15} /></button>
-        <div className="sidebar-footer"><span>EasyExcel Desktop</span><span className="version">0.5.0</span></div>
+        <div className="sidebar-footer"><span>EasyExcel Desktop</span><span className="version">0.6.0</span></div>
       </div>
     </aside>
 
@@ -308,6 +310,7 @@ export default function App() {
                 <div className="card-footnote"><span className="tiny-dot" />支持多选，只处理勾选的工作表；隐藏 Sheet 不参与处理。</div>
               </section>
 
+              <PrivacyExport request={{ inputPath, selection, headerRow }} disabled={locked || engine !== 'ready'} onBusy={setPrivacyBusy} />
               <section className="card preview-card">
                 <CardTitle title="数据预览"><span className="subtle">前 100 行 · 原表样式与图表</span></CardTitle>
                 <div aria-busy={previewBusy}>

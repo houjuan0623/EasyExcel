@@ -2,7 +2,7 @@
 
 ## 当前仓库桌面版 / Current desktop
 
-EasyExcel 0.5.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
+EasyExcel 0.6.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
 仓库：https://github.com/houjuan0623/EasyExcel。Electron + TypeScript 只负责界面，Python 负责所有 Excel 读取、处理和绘图。
 免安装 ZIP 完整解压后启动 EasyExcel.exe；内置 Electron、Python 和离线分析库，不要求安装 Microsoft Excel。
 
@@ -14,6 +14,10 @@ Python 编辑器支持离线脚本导入、运行、表格/绘图结果和脚本
 numpy-financial、PyXIRR、SciPy、statsmodels、Seaborn、XlsxWriter、Babel、QuantLib 与 decimal。
 
 边界：图表由 Python 离线重绘，不保证与 Excel 逐像素一致。三维图、SmartArt、复杂条件公式和旧 .xls 图表暂不支持。
+严格脱敏导出：默认匿名字段与固定 20 行完全虚构样例，可选 5/50 行、空白结构或仅字段说明。不按真实值/类别/统计/数量/分布取样。
+表头布局、列宽和可转换的代表性公式保留，跨行范围规范为演示范围，原常量只存本机映射；图片、图表/透视缓存、批注、外部关系和原元数据不复制。
+AI 通过 ZIP 内的匿名结构写代码，回到原离线机用 load_ai_context(导出标识) 获取匿名列名的真实数据与原参数。不得上传本机映射目录、原表、日志和分析结果。
+这不是对原表全部布局/公式的无损复制，不能从虚构样例推断真实结论；仅支持 .xlsx、32 个 Sheet、每表 256 列、前 100 行内的表头。
 不重算 Excel 公式、不加载外部图表资源、不自动复制图表/图片到拆分或多 Sheet 汇总输出；预览不显示隐藏行列及隐藏 Sheet。
 无 macOS/在线版本。Python 脚本以用户权限在本机执行。当前能力和使用方法以 README.md、desktop/README.md 为准。
 

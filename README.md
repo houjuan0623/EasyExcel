@@ -2,7 +2,7 @@
 
 <img src="desktop/assets/app.png" width="72" height="72" alt="EasyExcel 图标" />
 
-**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.5.0**，面向 Windows x64。
+**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.6.0**，面向 Windows x64。
 
 ## 功能
 
@@ -14,6 +14,7 @@
 - Python 编辑器支持导入、保存和运行 `.py`，展示日志、结果表和图表。
 - 脚本库自动收录运行过的代码，支持去重、分类、收藏、搜索、再次加载、回收站和备份迁移。
 - 内置财务与分析依赖；可在联网电脑让 AI 编写脚本，再导入离线电脑运行。
+- 严格脱敏导出：匿名字段、固定 5/20/50 行完全虚构的样例、安全公式和 AI 编程说明。原名称与公式常量仅保存在本机映射，AI 脚本用 `load_ai_context()` 在离线机读取真实数据。
 
 脚本读取所选 Sheet 的完整数据，前 100 行仅为原表预览限制。文件在本机处理，程序不需要连接远程服务。
 
@@ -39,7 +40,7 @@ npm run dev
 npm run dist:portable
 ```
 
-生成 `desktop/release/EasyExcel-Portable-0.5.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
+生成 `desktop/release/EasyExcel-Portable-0.6.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
 
 `npm run dist:win` 可生成安装程序；`npm run build` 只编译界面。详细说明见 [桌面版文档](desktop/README.md)。构建产物和依赖目录不提交到 Git。
 
@@ -54,6 +55,14 @@ npm run dist:portable
 统计图使用 Python 离线重绘，外观可能与 Excel 有差异。三维图、SmartArt、复杂条件公式及旧 `.xls` 图表暂不支持；预览支持的图片与图表不会因此自动复制进拆分或汇总结果。
 
 更名后继续使用 `%APPDATA%/excelrouter-desktop` 保存脚本库、历史和草稿，兼容旧版备份。换电脑时使用脚本库的“备份 / 导入备份”。
+
+## 给外部 AI 的脱敏包
+
+选择 Sheet →「脱敏导出」→ 确认匿名字段的演示类型 →「生成脱敏包 .zip」。默认生成 20 行独立虚构数据，不按真实数据的数量、类别、范围或分布取样；也可导出空白模板或仅字段说明。只将这个 ZIP 交给 AI，让它按包内说明调用 `load_ai_context("导出标识")` 编写脚本，再回到原离线电脑执行。
+
+脱敏模板保留表头布局、列宽和可安全转换的代表性公式，数据区统一为固定演示行；不导出原总行数、统计值、图表/图片、批注、链接、验证、条件规则或原元数据。公式常量替换为演示参数、跨行引用范围规范为演示范围；命名引用、外部引用、动态引用和其他无法安全转换的公式会移除并提示。因此这是一份供 AI 编程参考的演示结构，不是原表的完整计算副本，也不能据此推断真实业务结论。
+
+真实对应关系只保存在 `%APPDATA%/excelrouter-desktop/privacy-mappings`，不包含在 ZIP 或脚本库备份中；不要上传该目录、原表、分析结果或运行日志。字段或代表性公式改变后需重新导出。当前支持 `.xlsx`、最多 32 张 Sheet、每表 256 列、表头在前 100 行；`.xls` 请先在本机另存为 `.xlsx`。普通“给 AI 的说明”仍包含原表名称和表头，需要严格脱敏时请使用新的 ZIP 导出。
 
 ## 验证
 

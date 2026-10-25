@@ -232,13 +232,17 @@ def run_code(request, config, report):
                         save_figure(plt.figure(number))
 
                 plt.show = show
+                def load_ai_context(export_id):
+                    from desktop.privacy_export import load_ai_context as load_context
+                    return load_context(export_id, request.get('privacyMappingDir'), tables, inputs)
+
                 # input() cannot wait for the IPC pipe. Scripts should use variables instead.
                 sys.stdin = io.StringIO("")
                 namespace = {"__name__": "__main__", "__file__": str(script_path),
                              "pd": pd, "np": np, "plt": plt, "npf": npf, "Decimal": Decimal, "df": next(iter(tables.values())),
                              "tables": tables, "inputs": inputs, "OUTPUT_DIR": output_dir,
                              "display": display, "save_excel": save_excel, "save_figure": save_figure,
-                             "split_table": split_table, "merge_tables": merge_tables}
+                             "split_table": split_table, "merge_tables": merge_tables, "load_ai_context": load_ai_context}
                 print("开始运行脚本…")
                 exec(compile(code, str(script_path), "exec"), namespace)
                 show()

@@ -1,0 +1,34 @@
+/* Copyright (c) 2026 AbeLin · MIT License */
+.privacy-export-card { display: flex; align-items: center; gap: 12px; border: 1px solid #d8e7dd; border-radius: 12px; padding: 16px 20px; background: #f2f8f4; color: #397352; }
+.privacy-export-card > svg { flex-shrink: 0; }
+.privacy-export-card > div { flex: 1; min-width: 0; }
+.privacy-export-card strong { font-size: 13px; }
+.privacy-export-card p { margin: 5px 0 0; font-size: 11px; line-height: 1.7; color: #748c7b; }
+.privacy-export-card button { flex-shrink: 0; }
+.privacy-dialog { width: min(820px, calc(100vw - 56px)); max-height: calc(100vh - 56px); padding: 0; border: 1px solid #d7e2da; border-radius: 12px; box-shadow: 0 25px 100px #17302544; color: var(--ink); }
+.privacy-dialog[open] { display: flex; flex-direction: column; }
+.privacy-dialog::backdrop { background: #18372866; backdrop-filter: blur(3px); }
+.privacy-dialog > .card-title { flex-shrink: 0; border-bottom: 1px solid var(--line); }
+.privacy-dialog .card-title h2 { display: flex; align-items: center; gap: 9px; }
+.privacy-body { padding: 0 22px 20px; overflow-y: auto; }
+.privacy-intro { font-size: 12px; line-height: 1.8; color: #607366; }
+.privacy-options { display: flex; gap: 16px; margin: 16px 0; }
+.privacy-options label { display: flex; flex-direction: column; gap: 8px; flex: 1; font-size: 12px; color: #526c5a; }
+.privacy-options label:last-child { flex: 0 0 130px; }
+.privacy-dialog select { border: 1px solid #d7e2da; border-radius: 6px; background: white; color: #3e604c; padding: 8px 10px; font: inherit; }
+.privacy-policy { display: flex; align-items: flex-start; gap: 8px; background: #edf6f0; padding: 12px; border-radius: 8px; font-size: 11px; line-height: 1.8; color: #50785e; }
+.privacy-policy svg { flex-shrink: 0; margin-top: 2px; }
+.privacy-loading { display: flex; align-items: center; gap: 8px; color: #748c7b; }
+.privacy-fields > p { color: #829187; font-size: 11px; }
+.privacy-fields section { margin-top: 18px; }
+.privacy-fields h3 { display: flex; align-items: center; gap: 12px; font-size: 12px; margin: 10px 0; }
+.privacy-fields h3 small { color: #829187; font-weight: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.privacy-fields table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.privacy-fields th { background: #f2f7f4; color: #64836e; text-align: left; font-size: 11px; }
+.privacy-fields td, .privacy-fields th { padding: 8px 10px; border-bottom: 1px solid #e8eee9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.privacy-fields td select { width: 100%; padding: 5px 8px; }
+.privacy-success { margin-top: 18px; border: 1px solid #bcdac7; border-radius: 8px; background: #f4faf6; padding: 14px; font-size: 12px; line-height: 1.8; }
+.privacy-success p { margin: 7px 0; overflow-wrap: anywhere; color: #64836e; }
+.privacy-actions { flex-shrink: 0; padding: 16px 22px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.privacy-actions > span { font-size: 11px; color: #829187; }
+@media (max-width: 1190px) { .privacy-export-card { flex-wrap: wrap; padding: 14px; } .privacy-export-card p { font-size: 10px; } }
