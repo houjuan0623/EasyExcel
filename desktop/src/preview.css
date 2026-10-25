@@ -6,6 +6,28 @@
 .preview-zoom button:hover:not(:disabled), .preview-expand:hover { background: #eef5f0; }
 .preview-expand { display: flex; align-items: center; gap: 5px; background: none; border: 0; border-radius: 4px; color: #427559; font-size: 11px; padding: 6px; white-space: nowrap; }
 .sheet-viewport { position: relative; isolation: isolate; height: 420px; min-width: 0; max-width: 100%; overflow: auto; background: #f3f5f4; outline-offset: -2px; }
+.sheet-surface { position: relative; background: #fff; }
+.sheet-drawing { position: absolute; z-index: 1; padding: 0; border: 1px solid #e3e9e4; background: #fff; cursor: zoom-in; overflow: hidden; }
+.sheet-drawing img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.sheet-drawing:hover { outline: 2px solid #549b74; }
+.preview-drawing-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #607366; white-space: nowrap; cursor: pointer; }
+.preview-drawing-toggle input { accent-color: #21845e; }
+.sheet-data-bar { position: absolute; top: 3px; bottom: 3px; opacity: .4; pointer-events: none; }
+.sheet-condition-icon { padding-right: 5px; font-family: 'Segoe UI Symbol', sans-serif; font-size: 14px; }
+.sheet-diagonal { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; fill: none; }
+.preview-drawings { border-top: 1px solid var(--line); padding: 12px 18px; }
+.preview-drawings summary { font-size: 12px; color: #427559; cursor: pointer; }
+.preview-drawings summary span { margin-left: 8px; font-size: 10px; color: #819387; }
+.preview-drawing-list { display: flex; gap: 12px; overflow-x: auto; margin-top: 10px; padding-bottom: 3px; }
+.preview-drawing-card { width: 184px; flex: 0 0 184px; border: 1px solid #e3e9e4; border-radius: 7px; overflow: hidden; }
+.preview-drawing-card button { display: block; width: 100%; padding: 0; border: 0; background: white; text-align: left; cursor: zoom-in; }
+.preview-drawing-card img { display: block; width: 100%; height: 105px; object-fit: contain; }
+.preview-drawing-card button > span { display: block; padding: 6px 9px; background: #f5f8f6; font-size: 11px; color: #536b5b; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.preview-drawing-error { padding: 12px; min-height: 130px; display: flex; flex-direction: column; gap: 8px; color: #a07a44; font-size: 11px; }
+.preview-image-dialog { padding: 0; max-width: calc(100vw - 48px); max-height: calc(100vh - 48px); width: 1060px; border: 1px solid #d7e2da; border-radius: 12px; box-shadow: 0 25px 100px #17302544; }
+.preview-image-dialog::backdrop { background: #18372899; }
+.preview-image-body { padding: 12px; overflow: auto; }
+.preview-image-body img { display: block; width: 100%; max-height: calc(100vh - 155px); object-fit: contain; }
 .sheet-grid { table-layout: fixed; border-collapse: collapse; border-spacing: 0; background: #fff; color: #000; font-family: Calibri, 'Microsoft YaHei', sans-serif; font-size: 14.6667px; line-height: normal; font-weight: normal; }
 .sheet-grid th, .sheet-grid td { padding: 0; border: 1px solid #dfe4e1; }
 .sheet-grid thead th { position: sticky; top: 0; z-index: 3; height: 25px; background: #f1f4f2; color: #66756c; text-align: center; font: 11px/24px 'Segoe UI', sans-serif; box-shadow: 0 1px 0 #d2dcd5; }

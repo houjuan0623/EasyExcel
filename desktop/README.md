@@ -54,14 +54,14 @@ npm run dist:win
 
 ```text
 desktop/release/
-├── EasyExcel-Setup-0.4.0-x64.exe    可分发的完整安装程序
+├── EasyExcel-Setup-0.5.0-x64.exe    可分发的完整安装程序
 └── win-unpacked/
     └── EasyExcel.exe              打包后程序，可直接运行验证
 ```
 
 安装包名称中的版本来自 `desktop/package.json`。后续修改代码后，在 `desktop` 中重新执行 `npm run dist:win` 即可。`npm run pack:win` 只生成 `win-unpacked` 目录，省略安装程序。
 
-**安装与分发：**将 `EasyExcel-Setup-0.4.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
+**安装与分发：**将 `EasyExcel-Setup-0.5.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
 
 Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyExcelBackend.exe` 及同目录依赖。安装版使用该内置引擎，不依赖 `EXCELROUTER_PYTHON` 或系统 PATH。安装包目前未做代码签名，Windows 可能显示“未知发布者”；正式公开分发时可配置自己的签名证书。
 
@@ -79,7 +79,7 @@ Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyE
 npm run dist:portable
 ```
 
-输出 `desktop/release/EasyExcel-Portable-0.4.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
+输出 `desktop/release/EasyExcel-Portable-0.5.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
 
 请保留解压后的全部文件，不要只复制 `.exe`，也不要直接在压缩包内运行。最近任务记录仍保存在当前 Windows 用户的应用数据目录；移动程序文件夹不会迁移这些记录。
 
@@ -206,7 +206,17 @@ runtime_libraries.py 离线分析与财务库清单（pandas 等只在 desktop �
 
 标准拆分 / 汇总和内置脚本示例不会写入原文件。自定义 Python 脚本按其代码执行。最近任务只在 Electron 用户数据目录保存结果路径与处理摘要，不上传。
 
-预览读取和格式转换位于 `preview.py`、`preview_format.py`，仍全部使用 Python；TypeScript 只绘制返回的网格。`.xlsx` 使用流式读取，仅保留前 100 行单元格；`.xls` 通过 xlrd 读取格式。预览最多 256 列，超出会明确提示。公式优先显示文件保存的缓存结果，没有缓存时显示公式文本并提示，不重新计算公式。图片、图表、条件格式及部分特殊数字格式暂不能完整复现，界面会提示相关限制；字体也取决于本机可用字体。
+预览读取和格式转换位于 `preview.py`、`preview_format.py`、`preview_styles.py`、`preview_drawings.py`，仍全部使用 Python；TypeScript 展示返回的网格和 PNG。`.xlsx` 使用流式读取，仅保留前 100 行单元格；`.xls` 通过 xlrd 读取基础格式。预览最多 256 列，超出会明确提示。公式优先显示文件保存的缓存结果，没有缓存时显示公式文本并提示，不重新计算公式；字体取决于本机可用字体。
+
+### 统计图与复杂样式预览（0.5.0）
+
+选择文件后，点击某个 Sheet 的「预览」。前 100 行中的图片、图表显示在原锚点附近，可双向滚动、缩放或「展开预览」。取消「显示图表和图片」可查看被遮住的单元格。下方「统计图与图片」包含该工作表的所有已读取对象（也包括第 100 行之后的图表），点击缩略图即可单独放大，Esc 关闭。
+
+- 统计图：二维柱形/条形、折线、面积、饼图、单系列圆环、散点、雷达，支持常见堆积、百分比堆积和柱形/折线/面积组合。双坐标轴保留独立比例，并读取标题、图例、系列颜色、轴标题、常见数字轴格式和边界。Python 使用 Matplotlib 离线重绘，外观不保证逐像素一致。
+- 样式：原有字体、边框、对齐、合并区域之外，新增渐变/图案填充、斜线边框、单格富文本、上下标、负数格式颜色。条件格式支持数值比较、文字、空白、简单比较公式、色阶、数据条和图标集；按优先级及 `stopIfTrue` 应用。图标外观、渐变和数据条可能近似显示。
+- 图表和条件格式按引用范围读取数据，不局限于前 100 行；隐藏行、列和 Sheet 不进入图表数据。不读取外部文件或网络链接，不执行工作簿宏或条件公式代码。无单元格公式缓存时，部分图表可使用文件内已保存的图表缓存并提示。
+- 本次最多读取 16 个图片/图表，返回 PNG 合计最多 8 MB；图表每系列最多 5,000 个点、每组最多 20 个系列。图表与条件格式引用累计最多读取 100,000 个单元格、最远第 100,000 行，条件格式最多 200 组。超过上限会提示，单元格仍可预览。
+- 三维图、透视/扩展图、复杂组合、SmartArt、命名区域引用、复杂条件公式及旧 `.xls` 图表暂不支持。特殊数字格式和部分高级 Excel 样式可能回退显示。此功能仅改进预览；拆分和多 Sheet 汇总仍按原规则处理，**不自动复制图片或图表**。
 
 样式读取依据 [openpyxl 样式文档](https://openpyxl.readthedocs.io/en/stable/styles.html) 和 [xlrd API 文档](https://xlrd.readthedocs.io/en/latest/api.html)。
 
@@ -232,6 +242,8 @@ Remove-Item Env:\EXCELROUTER_SMOKE_DEV
 ```
 
 端到端测试用 Playwright 驱动真实 Electron 窗口，仅替代系统文件选择对话框。工作簿由 Python 生成到系统临时目录，验证 Sheet 切换、空选禁用、拆分格式与内容、汇总行数、停止任务、最近任务、小窗口布局及进程隔离，截图也保存在临时目录。可以用 `EXCELROUTER_TEST_DIR` 指定仓库外的测试根目录，每次建立独立子目录。测试无需读取用户表格。
+
+图表样式回归位于 `tests/test_desktop_preview_visuals.py`，验证全范围统计、隐藏数据排除、双轴比例、7 类图表、内嵌图片、条件格式优先级、富文本及外部关系隔离。Electron 测试另检查图表缩略图、放大弹窗、显示开关、渐变、数据条和图标集的真实 DOM 与截图。
 
 脚本工作台的端到端检查还包含 `.py` 导入与保存、AI 编程说明导出、真实分析表和 PNG、拆分/合并辅助函数、`Ctrl+Enter`、中文错误日志复制、无限循环停止和运行超时。`tests/test_desktop_code.py` 验证超过 100 行的完整数据、隐藏列、源文件哈希不变、空值分组、输出重名、日志及预览容量限制。
 

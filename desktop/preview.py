@@ -12,7 +12,11 @@ from types import SimpleNamespace
 from xml.etree import ElementTree as ET
 
 import openpyxl
+from openpyxl.cell.read_only import ReadOnlyCell
+from openpyxl.cell.rich_text import CellRichText
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles.colors import Color
+from openpyxl.formatting.rule import Rule
 from openpyxl.styles.colors import COLOR_INDEX
 from openpyxl.styles.numbers import is_date_format
 from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
@@ -20,6 +24,8 @@ from openpyxl.utils.datetime import from_excel
 from openpyxl.xml.functions import iterparse
 
 from desktop.preview_format import display
+from desktop.preview_styles import apply_conditions, fill_css, format_color
+from desktop.preview_drawings import Values, drawings
 
 ROW_LIMIT = 100
 COLUMN_LIMIT = 256
@@ -99,12 +105,20 @@ def cell_style(cell, palette):
         if side is not None and side.style in BORDER_STYLES:
             width, kind = BORDER_STYLES[side.style]
             style["border" + edge.title()] = f"{width}px {kind} {color(side.color, palette, '#000000')}"
+    style.update(fill_css(fill, palette, color))
+    if border.diagonal and border.diagonal.style in BORDER_STYLES:
+        style['diagonalColor'] = color(border.diagonal.color, palette, '#000000')
+        style['diagonalUp'] = bool(border.diagonalUp)
+        style['diagonalDown'] = bool(border.diagonalDown)
+    if font.vertAlign:
+        style['script'] = font.vertAlign
     return style
 
 
 def metadata(ws):
     """流式读布局和公式缓存；只保留前 100 行，避免为预览加载整张大表。"""
     data = {"rows": {}, "columns": [], "merges": [], "cache": {}, "warnings": set(),
+            "conditions": [], "drawingIds": [], "hiddenRowIndices": set(), "richText": {},
             "defaultHeight": 15, "defaultWidth": 8.43, "gridlines": True, "lastRow": 0, "lastColumn": 1}
     sheet_data = None
     with ws.parent._archive.open(ws._worksheet_path) as stream:
@@ -118,6 +132,8 @@ def metadata(ws):
             if tag == "row":
                 row = int(attrs.get("r", data["lastRow"] + 1))
                 data["lastRow"] = max(data["lastRow"], row)
+                if attrs.get('hidden') in ('1', 'true') or attrs.get('ht') == '0':
+                    data['hiddenRowIndices'].add(row)
                 if row <= ROW_LIMIT:
                     data["rows"][row] = dict(attrs)
                     for cell in element:
@@ -128,6 +144,9 @@ def metadata(ws):
                             value = cell.find(NS + "v")
                             if value is not None and (value.text is not None or cell.get("t") == "str"):
                                 data["cache"][cell.get("r")] = (cell.get("t", "n"), value.text or "")
+                        runs = cell.findall(NS + 'is/' + NS + 'r')
+                        if runs:
+                            data['richText'][cell.get('r')] = [ET.fromstring(ET.tostring(run)) for run in runs]
                 element.clear()
                 if sheet_data is not None:
                     sheet_data.clear()
@@ -145,16 +164,54 @@ def metadata(ws):
             elif tag == "sheetView":
                 data["gridlines"] = attrs.get("showGridLines", "1") not in ("0", "false")
             elif tag == "conditionalFormatting":
-                data["warnings"].add("条件格式未渲染，显示单元格基础样式")
+                try:
+                    rules = [Rule.from_tree(node) for node in element if node.tag == NS + 'cfRule']
+                    if rules and len(data['conditions']) < 200:
+                        for rule in rules:
+                            if rule.dxfId is not None:
+                                rule.dxf = ws.parent._differential_styles[rule.dxfId]
+                        data['conditions'].append((attrs['sqref'], rules))
+                    else:
+                        data['warnings'].add('部分扩展条件格式或超量规则暂不支持预览')
+                except (ValueError, TypeError, KeyError, IndexError):
+                    data['warnings'].add('部分条件格式无法读取，已保留基础样式')
                 element.clear()
             elif tag == "drawing":
-                data["warnings"].add("图片和图表不在表格预览范围内")
+                data['drawingIds'].append(attrs.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'))
     return data
+
+
+def rich_runs(runs, palette):
+    """只从富文本中读取文字及允许的字体属性。"""
+    result = []
+    for run in runs:
+        style = {}
+        font = run.find('{*}rPr')
+        if font is not None:
+            for child in font:
+                tag, val = child.tag.rsplit('}', 1)[-1], child.get('val')
+                if tag == 'color':
+                    style['color'] = color(Color.from_tree(child), palette, '#000000')
+                elif tag == 'sz':
+                    style['fontSize'] = bounded(val, 11, 1, 409) * 4/3
+                elif tag == 'rFont':
+                    style['fontFamily'] = json.dumps(val or 'Calibri') + ', sans-serif'
+                elif tag in ('b', 'i'):
+                    style['fontWeight' if tag == 'b' else 'fontStyle'] = ('bold' if tag == 'b' else 'italic') if val not in ('0', 'false') else 'normal'
+                elif tag == 'u':
+                    style['textDecoration'] = 'none' if val == 'none' else 'underline'
+                elif tag == 'strike' and val not in ('0', 'false'):
+                    style['textDecoration'] = 'line-through'
+                elif tag == 'vertAlign':
+                    style['verticalAlign'] = 'super' if val == 'superscript' else 'sub' if val == 'subscript' else 'baseline'
+        result.append({'text': run.findtext('{*}t', ''), 'style': style})
+    return result
 
 
 def xlsx_data(path, sheet):
     """用 openpyxl 读取前 100 行样式，并从文件缓存中取公式的显示值。"""
-    book = openpyxl.load_workbook(path, read_only=True, data_only=False, keep_links=False)
+    book = openpyxl.load_workbook(path, read_only=True, data_only=False, keep_links=False, rich_text=True)
+    reader = None
     try:
         if sheet not in book.sheetnames or book[sheet].sheet_state != "visible":
             raise ValueError("该工作表不存在或已被隐藏，请重新读取文件")
@@ -164,17 +221,19 @@ def xlsx_data(path, sheet):
         width = max(data["lastColumn"], ws.max_column or 1, max((merge[2] for merge in data["merges"]), default=1))
         height = min(ROW_LIMIT, total)
         palette = themes(book)
+        reader = Values(path, book, metadata, {sheet: data})
         # reset_dimensions 避免文件错误声明 A1:A1 时漏掉实际单元格。
         ws.reset_dimensions()
         rows = list(islice(ws.iter_rows(min_row=1, max_row=height, max_col=COLUMN_LIMIT), height))
         for row in rows:
             width = max(width, max((i + 1 for i, cell in enumerate(row) if cell.value is not None or getattr(cell, "has_style", False)), default=1))
-        cells = {}
+        cells, raw_cells = {}, {}
         for r, row in enumerate(rows, 1):
             for c, cell in enumerate(row[:min(width, COLUMN_LIMIT)], 1):
                 if cell.font is None:
-                    continue
-                value = cell.value
+                    cell = ReadOnlyCell(ws, r, c, None)
+                rich = cell.value if isinstance(cell.value, CellRichText) else None
+                value = str(rich) if rich is not None else cell.value
                 if cell.data_type == "f":
                     cached = data["cache"].get(cell.coordinate)
                     if cached is None:
@@ -194,11 +253,68 @@ def xlsx_data(path, sheet):
                 if approximate:
                     data["warnings"].add("部分特殊数字格式暂显示原始值")
                 style = cell_style(cell, palette)
+                if format_color(value, cell.number_format):
+                    style['color'] = format_color(value, cell.number_format)
                 cells[r, c] = {"text": text, "style": style, "numeric": isinstance(value, (int, float, datetime.date, datetime.time, datetime.timedelta)) and not isinstance(value, bool),
-                               "center": isinstance(value, bool) or cell.data_type == "e"}
-        return assemble(data, cells, width, total)
+                               "center": isinstance(value, bool) or cell.data_type == "e", "value": value}
+                reader.prime[sheet, r, c] = value if cell.data_type != 'f' or cell.coordinate in data['cache'] else None
+                raw_cells[r, c] = cell
+                if cell.coordinate in data['richText']:
+                    cells[r, c]['runs'] = rich_runs(data['richText'][cell.coordinate], palette)
+                elif rich is not None:
+                    cells[r, c]['runs'] = rich_runs(list(rich.to_tree()), palette)
+        apply_conditions(data['conditions'], cells, raw_cells, palette, sheet, reader, cell_style, color, data['warnings'])
+        assets = drawings(book, ws, reader, data['warnings']) if data['drawingIds'] else []
+        result = assemble(data, cells, width, total)
+        result['drawings'] = place_drawings(assets, data)
+        if any(asset['kind'] == 'chart' and asset.get('src') for asset in assets):
+            result['warnings'].append('图表按保存的数据离线重绘，常见二维图表可显示；外观可能与 Excel 略有差异')
+        return result
     finally:
+        if reader:
+            reader.close()
         book.close()
+
+
+def place_drawings(assets, data):
+    """将原始锚点转换为可见网格坐标；行 100 以外的图表仍可在图表面板查看。"""
+    def location(marker):
+        col, row = marker['col'], marker['row']
+        if col > 16384 or row > 1048576 or min(col, row) < 0:
+            raise ValueError('无效绘图锚点')
+        x = 0
+        for index in range(1, min(col, COLUMN_LIMIT) + 1):
+            attr = {}
+            for item in data['columns']:
+                if int(item['min']) <= index <= int(item['max']):
+                    attr.update(item)
+            if attr.get('hidden') in ('1', 'true'):
+                continue
+            units = bounded(attr.get('width', data['defaultWidth']), 8.43, 0, 255)
+            x += round(units * 12) if units < 1 else math.floor(units * 7 + 5)
+        y = 0
+        for index in range(1, min(row, ROW_LIMIT) + 1):
+            attr = data['rows'].get(index, {})
+            if attr.get('hidden') not in ('1', 'true'):
+                y += bounded(attr.get('ht', data['defaultHeight']), 15, 0, 409.5) * 4 / 3
+        return x + bounded(marker['colOff'] / 9525, 0, 0, 2000), y + bounded(marker['rowOff'] / 9525, 0, 0, 2000)
+    for asset in assets:
+        anchor = asset.pop('anchor', None)
+        asset['inline'] = False
+        if not anchor:
+            continue
+        try:
+            x, y = location(anchor['from'])
+            if 'to' in anchor:
+                right, bottom = location(anchor['to'])
+                w, h = right-x, bottom-y
+            else:
+                w, h = anchor.get('width', 600), anchor.get('height', 350)
+            asset.update(x=round(x, 2), y=round(y, 2), width=bounded(w, 600, 40, 1600), height=bounded(h, 350, 40, 1200),
+                         inline=anchor['from']['row'] < ROW_LIMIT and anchor['from']['col'] < COLUMN_LIMIT)
+        except ValueError:
+            pass
+    return assets
 
 
 def xls_data(path, sheet):
@@ -321,12 +437,13 @@ def assemble(data, cells, width, total):
             if key not in style_keys:
                 style_keys[key] = len(styles)
                 styles.append(style)
-            row["cells"].append({"column": col["index"], "text": text, "style": style_keys[key], "rowSpan": span_rows, "colSpan": span_cols})
+            extra = {key: source[key] for key in ('runs', 'dataBar', 'icon', 'hideText') if key in source} if original == position else {}
+            row["cells"].append({"column": col["index"], "text": text, "style": style_keys[key], "rowSpan": span_rows, "colSpan": span_cols, **extra})
     if width > COLUMN_LIMIT:
         data["warnings"].add(f"工作表较宽，本次预览前 {COLUMN_LIMIT} 列")
     return {"columns": columns, "rows": rows, "styles": styles, "rowLimit": ROW_LIMIT, "endRow": end,
             "totalRows": total, "hiddenRows": end - len(rows), "hiddenColumns": min(COLUMN_LIMIT, width) - len(columns),
-            "truncatedColumns": width > COLUMN_LIMIT, "showGridLines": data["gridlines"], "warnings": sorted(data["warnings"])}
+            "truncatedColumns": width > COLUMN_LIMIT, "showGridLines": data["gridlines"], "warnings": sorted(data["warnings"]), "drawings": []}
 
 
 def read_preview(path, sheet):

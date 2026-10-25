@@ -36,6 +36,8 @@ export interface PreviewStyle {
   fontStyle?: 'italic' | 'normal';
   color?: string;
   backgroundColor?: string;
+  backgroundImage?: string;
+  backgroundSize?: string;
   textAlign?: 'left' | 'center' | 'right' | 'justify';
   verticalAlign?: 'top' | 'middle' | 'bottom';
   textDecoration?: string;
@@ -47,8 +49,22 @@ export interface PreviewStyle {
   shrinkToFit?: boolean;
   indent?: number;
   rotation?: number;
+  diagonalUp?: boolean;
+  diagonalDown?: boolean;
+  diagonalColor?: string;
+  script?: 'superscript' | 'subscript' | 'baseline';
 }
-export interface PreviewCell { column: number; text: string; style: number; rowSpan: number; colSpan: number }
+export interface PreviewCell {
+  column: number; text: string; style: number; rowSpan: number; colSpan: number;
+  runs?: { text: string; style: Pick<PreviewStyle, 'fontFamily' | 'fontSize' | 'fontWeight' | 'fontStyle' | 'color' | 'textDecoration'> & { verticalAlign?: 'super' | 'sub' | 'baseline' } }[];
+  dataBar?: { start: number; width: number; color: string };
+  icon?: { text: string; color: string };
+  hideText?: boolean;
+}
+export interface PreviewDrawing {
+  id: string; kind: 'chart' | 'image'; title: string; src?: string; error?: string;
+  inline: boolean; x?: number; y?: number; width?: number; height?: number;
+}
 export interface Preview {
   columns: { index: number; label: string; width: number }[];
   rows: { index: number; height: number; cells: PreviewCell[] }[];
@@ -61,6 +77,7 @@ export interface Preview {
   truncatedColumns: boolean;
   showGridLines: boolean;
   warnings: string[];
+  drawings: PreviewDrawing[];
 }
 export interface GroupPreview { values: string[]; missing: string[] }
 export interface RunRequest extends SelectionRequest {

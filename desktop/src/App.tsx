@@ -247,7 +247,7 @@ export default function App() {
       <div className="sidebar-bottom">
         <div className="privacy-note"><span className="privacy-icon"><ShieldCheck size={20} /></span><strong>文件，留在你的电脑</strong><p>所有表格均在本地处理<br />无需上传，安心使用</p><span className="offline-pill"><span />100% 本地运行</span></div>
         <button className="nav-item help-button" onClick={() => setHelp(true)}><CircleHelp size={18} /><span>使用帮助</span><ArrowUpRight size={15} /></button>
-        <div className="sidebar-footer"><span>EasyExcel Desktop</span><span className="version">0.4.0</span></div>
+        <div className="sidebar-footer"><span>EasyExcel Desktop</span><span className="version">0.5.0</span></div>
       </div>
     </aside>
 
@@ -309,7 +309,7 @@ export default function App() {
               </section>
 
               <section className="card preview-card">
-                <CardTitle title="数据预览"><span className="subtle">前 100 行 · 保留原表样式</span></CardTitle>
+                <CardTitle title="数据预览"><span className="subtle">前 100 行 · 原表样式与图表</span></CardTitle>
                 <div aria-busy={previewBusy}>
                   {previewBusy ? <div className="preview-placeholder"><LoaderCircle size={23} className="spin" /><span>正在读取工作表样式…</span></div> : previewError ? <div className="preview-placeholder"><AlertCircle size={23} /><span>{previewError}</span></div> : preview ? <SheetPreview key={keyOf(activeSheet!.path, activeSheet!.name)} preview={preview} name={activeSheet!.name} /> : <div className="preview-placeholder"><Columns3 size={28} strokeWidth={1.4} /><span>选择工作表，即可在这里预览数据</span></div>}
                 </div><div className="card-footnote"><Eye size={12} />包含原表标题与表头；实际导出以勾选的 Sheet 为准。</div>

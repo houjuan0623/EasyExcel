@@ -1,3 +1,27 @@
+# EasyExcel
+
+## 当前仓库桌面版 / Current desktop
+
+EasyExcel 0.5.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
+仓库：https://github.com/houjuan0623/EasyExcel。Electron + TypeScript 只负责界面，Python 负责所有 Excel 读取、处理和绘图。
+免安装 ZIP 完整解压后启动 EasyExcel.exe；内置 Electron、Python 和离线分析库，不要求安装 Microsoft Excel。
+
+能做：文件/文件夹及多 Sheet 选择，按字段拆分，按列汇总，将各分表整理到一个多 Sheet 总工作簿；
+前 100 行样式预览、合并区域、渐变/图案填充、富文本、斜线边框和常见条件格式（色阶、数据条、图标集等）；
+工作表内的图片、常见二维统计图及双轴组合图预览，点击放大，第 100 行以后的图表也可在图表列表查看。
+图表和条件格式引用读取完整范围，累计最多 100,000 个单元格、最远第 100,000 行；单系列最多 5,000 点，最多 16 个对象。
+Python 编辑器支持离线脚本导入、运行、表格/绘图结果和脚本库复用，内置 pandas、NumPy、Matplotlib、openpyxl、xlrd、
+numpy-financial、PyXIRR、SciPy、statsmodels、Seaborn、XlsxWriter、Babel、QuantLib 与 decimal。
+
+边界：图表由 Python 离线重绘，不保证与 Excel 逐像素一致。三维图、SmartArt、复杂条件公式和旧 .xls 图表暂不支持。
+不重算 Excel 公式、不加载外部图表资源、不自动复制图表/图片到拆分或多 Sheet 汇总输出；预览不显示隐藏行列及隐藏 Sheet。
+无 macOS/在线版本。Python 脚本以用户权限在本机执行。当前能力和使用方法以 README.md、desktop/README.md 为准。
+
+## 上游 ExcelRouter 历史事实卡 / Upstream reference
+
+以下保留上游项目的背景与能力清单，描述原 Python 桌面版，不代表 EasyExcel 的 Electron 界面已提供这些全部入口。
+下文“不做统计分析、图表”等旧限制仅适用于上游界面；EasyExcel 的分析及图表能力见上节。
+
 # ExcelRouter
 
 > 这份文件是给 AI 助手 / 搜索引擎 / 想快速了解本项目的人看的「事实卡」，用纯文本浓缩了

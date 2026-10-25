@@ -8,7 +8,77 @@ from pathlib import Path
 import sys
 
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
+from openpyxl.chart import BarChart, DoughnutChart, LineChart, Reference
+from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, DataBarRule, IconSetRule
+from openpyxl.styles import Alignment, Border, Font, GradientFill, PatternFill, Side
+
+
+def visual_sheet(wb):
+    """覆盖复杂单元格、原位置图表、双轴与 100 行之外的对象。"""
+    ws = wb.create_sheet('图表与样式')
+    ws.merge_cells('A1:F2')
+    ws['A1'] = '2026 经营分析 · 图表与复杂样式'
+    ws['A1'].font = Font(name='Microsoft YaHei', size=19, bold=True, color='FFFFFF')
+    ws['A1'].fill = GradientFill(stop=['155D45', '4BA783'])
+    ws['A1'].alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 30
+    ws.row_dimensions[2].height = 24
+    for col, width in zip('ABCDEF', [16, 19, 19, 15, 18, 24]):
+        ws.column_dimensions[col].width = width
+    for c, label in enumerate(['月份', '销售额', '成本', '完成率', '净利润', '趋势'], 1):
+        ws.cell(4, c, label)
+        ws.cell(4, c).font = Font(bold=True, color='155D45')
+        ws.cell(4, c).fill = PatternFill('solid', fgColor='DFF0E6')
+    for r in range(5, 17):
+        revenue = 18000 + (r-5) * 1600 + (r % 3) * 900
+        cost = 17000 + (r-5) * 800
+        values = [f'{r-4}月', revenue, cost, .65 + (r-5) * .028, revenue-cost, (r-5)/11]
+        for c, value in enumerate(values, 1):
+            cell = ws.cell(r, c, value)
+            cell.font = Font(name='Microsoft YaHei', size=11, color='243C31')
+            cell.fill = PatternFill('solid', fgColor='F1F7F3' if r % 2 else 'FFFFFF')
+            cell.alignment = Alignment(vertical='center')
+            cell.border = Border(bottom=Side(style='thin', color='E1EBE5'))
+        ws.row_dimensions[r].height = 27
+        for col in (2, 3, 5):
+            ws.cell(r, col).number_format = '#,##0;[Red](#,##0)'
+        for col in (4, 6):
+            ws.cell(r, col).number_format = '0.0%'
+    ws.conditional_formatting.add('B5:B16', DataBarRule(start_type='min', end_type='max', color='4E9B78'))
+    ws.conditional_formatting.add('D5:D16', ColorScaleRule(start_type='min', start_color='F9E6C5', end_type='max', end_color='8BCDAD'))
+    ws.conditional_formatting.add('F5:F16', IconSetRule('3Arrows', 'percent', [0, 33, 67]))
+    ws.conditional_formatting.add('E5:E16', CellIsRule(operator='greaterThan', formula=['10000'], font=Font(bold=True, color='19714C')))
+    ws['A18'] = '项目 / 月份'
+    ws['A18'].border = Border(diagonal=Side(style='thin', color='21845E'), diagonalDown=True)
+    ws.row_dimensions[18].height = 36
+    ws.merge_cells('B18:F18')
+    ws['B18'] = CellRichText('提示：', TextBlock(InlineFont(b=True, color='21845E'), '绿色为较好表现'), ' · 数据条、色阶与图标保留')
+    ws['B18'].alignment = Alignment(vertical='center')
+    ws['A20'] = '图案填充'
+    ws['A20'].fill = PatternFill('lightDown', fgColor='8BBDA4', bgColor='F4FAF6')
+    bar, line = BarChart(), LineChart()
+    bar.title = '月度销售与完成率'
+    bar.y_axis.title = '销售额（元）'
+    bar.y_axis.numFmt = '#,##0'
+    line.y_axis.title = '完成率'
+    line.y_axis.axId = 200
+    line.y_axis.numFmt = '0%'
+    line.y_axis.scaling.min, line.y_axis.scaling.max = 0, 1
+    for chart, col in [(bar, 2), (line, 4)]:
+        chart.add_data(Reference(ws, min_col=col, min_row=4, max_row=16), titles_from_data=True)
+        chart.set_categories(Reference(ws, min_col=1, min_row=5, max_row=16))
+    line.series[0].graphicalProperties.line.solidFill = 'ED7D31'
+    bar += line
+    bar.width, bar.height = 21, 11.5
+    ws.add_chart(bar, 'H4')
+    pie = DoughnutChart()
+    pie.title = '第一季度销售占比'
+    pie.add_data(Reference(ws, min_col=2, min_row=4, max_row=7), titles_from_data=True)
+    pie.set_categories(Reference(ws, min_col=1, min_row=5, max_row=7))
+    ws.add_chart(pie, 'A110')
+    return ws
 
 
 def create(directory):
@@ -69,6 +139,7 @@ def create(directory):
     ws["A99"] = "跨越第 100 行的合并区域"
     ws["F100"] = "第 100 行，完整保留"
     ws["F101"] = "第 101 行，不应显示"
+    visual_sheet(wb)
     wb.save(path)
     wb.close()
     print(json.dumps({"path": str(path)}, ensure_ascii=False))

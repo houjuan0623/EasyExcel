@@ -2,12 +2,13 @@
 
 <img src="desktop/assets/app.png" width="72" height="72" alt="EasyExcel 图标" />
 
-**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.4.0**，面向 Windows x64。
+**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.5.0**，面向 Windows x64。
 
 ## 功能
 
 - 选择 Excel 文件或文件夹，按文件勾选多个 Sheet。
-- 预览原表前 100 行，保留常见样式与合并单元格，支持放大查看。
+- 预览原表前 100 行，显示合并单元格、渐变与图案填充、富文本、斜线边框、常见条件格式。
+- 显示工作表内的图片与常见二维统计图，支持双坐标轴组合图、原位置查看和点击放大；图表引用可读取第 100 行之后的数据。
 - 按字段拆分和汇总 Excel，沿用 Python 表格处理引擎。
 - 可将拆分结果整理成一个总工作簿，每份分表独立占一个 Sheet；也可直接整理已经拆好的文件。
 - Python 编辑器支持导入、保存和运行 `.py`，展示日志、结果表和图表。
@@ -38,7 +39,7 @@ npm run dev
 npm run dist:portable
 ```
 
-生成 `desktop/release/EasyExcel-Portable-0.4.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
+生成 `desktop/release/EasyExcel-Portable-0.5.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
 
 `npm run dist:win` 可生成安装程序；`npm run build` 只编译界面。详细说明见 [桌面版文档](desktop/README.md)。构建产物和依赖目录不提交到 Git。
 
@@ -49,6 +50,8 @@ npm run dist:portable
 将 [AI 编程说明](desktop/EasyExcel-AI编程说明.txt) 交给 AI，填写字段和需求，即可按工作台的 `df`、`tables`、`OUTPUT_DIR`、`display()`、`save_excel()`、`save_figure()` 等接口生成代码。软件中选择好 Sheet 后，还可通过“给 AI 的说明”导出包含当前表头的说明。
 
 脚本以当前用户权限运行；结果应写到本次 `OUTPUT_DIR`。公式读取已保存的缓存值，不执行 Excel 公式重算。自定义脚本导出不会自动保留原表样式，具体行为见桌面版文档。
+
+统计图使用 Python 离线重绘，外观可能与 Excel 有差异。三维图、SmartArt、复杂条件公式及旧 `.xls` 图表暂不支持；预览支持的图片与图表不会因此自动复制进拆分或汇总结果。
 
 更名后继续使用 `%APPDATA%/excelrouter-desktop` 保存脚本库、历史和草稿，兼容旧版备份。换电脑时使用脚本库的“备份 / 导入备份”。
 
