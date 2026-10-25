@@ -266,6 +266,11 @@ def main():
         elif command == "privacy_export":
             from desktop.privacy_export import export_privacy
             result = export_privacy(request, selection_config(request))
+        elif command in ("analysis_grid", "analysis_inspect", "analysis_generate", "analysis_export"):
+            from desktop import analysis
+            action = {"analysis_grid": analysis.grid, "analysis_inspect": analysis.inspect,
+                      "analysis_generate": analysis.render, "analysis_export": analysis.export_dashboard}[command]
+            result = action(request)
         elif command == "code_environment":
             from desktop.code_runner import environment
             result = environment()

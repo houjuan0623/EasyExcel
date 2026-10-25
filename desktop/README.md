@@ -8,6 +8,8 @@ Electron + React + TypeScript 只负责界面、系统文件对话框和进程�
 
 0.7.0 新增原表 VBA 结构包与导出前检查清单；保留真实字段和原公式，支持读取 .xlsm，详见下文。
 
+0.8.0 新增统计分析与 dashboard。按图表用途和注解选区，支持跨 Sheet 组合、描述统计、方案复用和离线报告，全部计算仍由本机 Python 完成。
+
 图标资源和重新转换说明见 [assets/README.md](assets/README.md)。
 
 ## 启动
@@ -58,14 +60,14 @@ npm run dist:win
 
 ```text
 desktop/release/
-├── EasyExcel-Setup-0.7.0-x64.exe    可分发的完整安装程序
+├── EasyExcel-Setup-0.8.0-x64.exe    可分发的完整安装程序
 └── win-unpacked/
     └── EasyExcel.exe              打包后程序，可直接运行验证
 ```
 
 安装包名称中的版本来自 `desktop/package.json`。后续修改代码后，在 `desktop` 中重新执行 `npm run dist:win` 即可。`npm run pack:win` 只生成 `win-unpacked` 目录，省略安装程序。
 
-**安装与分发：**将 `EasyExcel-Setup-0.7.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
+**安装与分发：**将 `EasyExcel-Setup-0.8.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
 
 Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyExcelBackend.exe` 及同目录依赖。安装版使用该内置引擎，不依赖 `EXCELROUTER_PYTHON` 或系统 PATH。安装包目前未做代码签名，Windows 可能显示“未知发布者”；正式公开分发时可配置自己的签名证书。
 
@@ -83,7 +85,7 @@ Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyE
 npm run dist:portable
 ```
 
-输出 `desktop/release/EasyExcel-Portable-0.7.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
+输出 `desktop/release/EasyExcel-Portable-0.8.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
 
 请保留解压后的全部文件，不要只复制 `.exe`，也不要直接在压缩包内运行。最近任务记录仍保存在当前 Windows 用户的应用数据目录；移动程序文件夹不会迁移这些记录。
 
@@ -121,6 +123,16 @@ Remove-Item Env:\EXCELROUTER_PACKAGED_EXE
 每个文件只选择一张 Sheet 时，以文件名命名；同一文件选择多张时，以「文件名_原 Sheet 名」命名，每张都会保留。非法字符自动替换，名称最长 31 字，重名自动加序号。所有数据行都会处理，前 100 行仅是界面预览限制。
 
 保留常见单元格样式、数据类型、合并区域、行高列宽、冻结窗格、筛选范围和打印布局；隐藏 Sheet 不处理，隐藏列的数据沿用现有规则不带出。普通整理读取公式已保存的计算值，请先在 Excel/WPS 计算并保存；拆分时启用「保留同行公式」的分表，收入总工作簿后仍保留这些公式。图片、图表和 Excel 表对象不复制；依赖其他表/定义名称的验证和条件格式会跳过并提示。`.xls` 主要保留数据值。
+
+## 统计分析与 dashboard（0.8.0）
+
+左侧「统计分析」支持 8 类组件：指标卡、柱形、折线、饼图、直方图、散点、箱线与 Pearson 相关性热力图。每类提供用途、计算方法和字段选择说明。数据块可选择不同工作簿/Sheet 的矩形、整行或整列，支持鼠标拖选、Shift 扩展、分页跳转、多层合并表头和横向数据转置。
+
+点击「读取数据并检查字段」确认样例和口径，再绑定字段生成预览、加入看板。同结构记录按字段名追加；不同指标通过单一共同字段一对一关联，拒绝重复键造成的记录放大。空键、未匹配、缺失公式缓存、隐藏行列和合计记录的处理会显示。数值不自动补零，单位只作标注。
+
+看板最多 12 张图，可编辑、排序、刷新、移除；配置自动本机保存并支持导出/导入 JSON。离线报告包含自包含 HTML、图表 PNG、图表数据与描述统计 CSV。真实结果只写用户选择的本机目录，不属于脱敏包。选区每张图最多 4 块、500,000 个单元格，每块最多 256 列（转置后最多 256 字段），最远第 100,000 行，单任务最多 5 分钟。
+
+完整步骤、图表对照表、关联方式、统计口径和测试入口见 [统计分析指南](../docs/统计分析指南.md)。源表内嵌图表的「预览」和此处根据用户选区新生成的统计图相互独立。
 
 ## 原表 VBA 结构包（0.7.0）
 

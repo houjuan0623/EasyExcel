@@ -2,11 +2,13 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, extname, join, resolve } from 'node:path';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { CodeEvent, CodeRequest, CodeResult, HistoryItem, JobEvent, JobResult, PrivacyRequest, PrivacyResult, RunRequest } from '../shared/types';
 import { callPython, desktopRoot, stopPython, terminatePython } from './python';
 import { ScriptLibrary } from './script-library';
+import { parseAnalysisPlan } from '../shared/analysis';
+import type { AnalysisPlan, AnalysisRequest, AnalysisResult } from '../shared/analysis';
 
 let window: BrowserWindow;
 let active: { id: string; child: ChildProcessWithoutNullStreams; cancel?: () => void } | null = null;
@@ -54,6 +56,53 @@ function textContent(value: unknown): string {
 }
 
 function registerHandlers() {
+  for (const name of ['grid', 'inspect']) {
+    handle(`analysis:${name}`, async (request: Record<string, unknown>) => {
+      if (!request || typeof request !== 'object') throw new Error('分析请求无效');
+      const key = `analysis:${name}`;
+      reads.get(key)?.kill();
+      const run = callPython({ ...request, command: `analysis_${name}` });
+      reads.set(key, run.child);
+      const timer = setTimeout(() => terminatePython(run.child), 120000);
+      try { return await run.promise; }
+      finally { clearTimeout(timer); if (reads.get(key) === run.child) reads.delete(key); }
+    });
+  }
+  let analysisJob: string | null = null;
+  async function analysisJobRun<T>(request: object) {
+    if (active) throw new Error('已有任务正在运行');
+    const id = randomUUID();
+    const run = callPython<T>(request);
+    analysisJob = id;
+    active = { id, child: run.child, cancel: () => terminatePython(run.child) };
+    const timer = setTimeout(() => terminatePython(run.child), 300000);
+    try { return await run.promise; }
+    finally { clearTimeout(timer); if (active?.id === id) active = null; if (analysisJob === id) analysisJob = null; }
+  }
+  handle('analysis:generate', (request: AnalysisRequest) => analysisJobRun<AnalysisResult>({ ...request, command: 'analysis_generate' }));
+  handle('analysis:cancel', () => { if (active?.id === analysisJob) active?.cancel?.(); });
+  handle('analysis:save-plan', async (value: unknown) => {
+    const plan = parseAnalysisPlan(value);
+    const target = await dialog.showSaveDialog(window, { title: '保存统计分析方案', defaultPath: 'EasyExcel-dashboard.json', filters: [{ name: '分析方案', extensions: ['json'] }] });
+    if (target.canceled || !target.filePath) return null;
+    if (extname(target.filePath).toLowerCase() !== '.json') throw new Error('分析方案须保存为 .json，不能覆盖 Excel 工作簿');
+    writeFileSync(target.filePath, JSON.stringify(plan, null, 2), 'utf8');
+    return target.filePath;
+  });
+  handle('analysis:import-plan', async () => {
+    const target = await dialog.showOpenDialog(window, { title: '导入统计分析方案', properties: ['openFile'], filters: [{ name: '分析方案', extensions: ['json'] }] });
+    if (target.canceled) return null;
+    if (statSync(target.filePaths[0]).size > 1000000) throw new Error('分析方案不能超过 1 MB');
+    return parseAnalysisPlan(JSON.parse(readFileSync(target.filePaths[0], 'utf8').replace(/^\uFEFF/, '')));
+  });
+  handle('analysis:export', async (value: AnalysisPlan) => {
+    const plan = parseAnalysisPlan(value);
+    const target = await dialog.showOpenDialog(window, { title: '保存本地 dashboard 报告（包含真实统计结果）', properties: ['openDirectory', 'createDirectory'] });
+    if (target.canceled) return null;
+    const result = await analysisJobRun<{ output: string; charts: number }>({ ...plan, outputPath: target.filePaths[0], command: 'analysis_export' });
+    allowedOutputs.add(resolve(result.output));
+    return result;
+  });
   handle('python:health', () => callPython({ command: 'health' }).promise);
   handle('code:environment', () => callPython({ command: 'code_environment' }).promise);
   handle('scripts:list', () => {

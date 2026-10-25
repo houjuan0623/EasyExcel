@@ -1,4 +1,5 @@
 // Copyright (c) 2026 AbeLin · MIT License
+import type { AnalysisBlock, AnalysisGrid, AnalysisPlan, AnalysisRequest, AnalysisResult, AnalysisSchema } from './analysis';
 export type Mode = 'split' | 'merge';
 export interface SheetInfo {
   name: string;
@@ -151,6 +152,13 @@ export interface ScriptRecord extends ScriptInfo { code: string }
 export interface ScriptSave { code: string; name: string; category?: string; notes?: string; favorite?: boolean; rememberOnly?: boolean }
 export interface ScriptLibrarySnapshot { items: ScriptInfo[]; warnings: string[]; path: string }
 export interface DesktopAPI {
+  analysisGrid(request: { inputPath: string; path: string; sheet: string; startRow: number; startColumn: number; includeHidden?: boolean; headerRow?: number }): Promise<AnalysisGrid>;
+  analysisInspect(request: { inputPath: string; blocks: AnalysisBlock[] }): Promise<AnalysisSchema>;
+  analysisGenerate(request: AnalysisRequest): Promise<AnalysisResult>;
+  analysisCancel(): Promise<void>;
+  analysisSavePlan(plan: AnalysisPlan): Promise<string | null>;
+  analysisImportPlan(): Promise<AnalysisPlan | null>;
+  analysisExport(plan: AnalysisPlan): Promise<{ output: string; charts: number } | null>;
   health(): Promise<{ python: string; version: string; frozen: boolean }>;
   chooseSource(kind: 'file' | 'directory'): Promise<string | null>;
   chooseOutput(): Promise<string | null>;

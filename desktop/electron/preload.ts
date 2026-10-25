@@ -3,6 +3,13 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { CodeEvent, DesktopAPI, JobEvent } from '../shared/types';
 
 const api: DesktopAPI = {
+  analysisGrid: (request) => ipcRenderer.invoke('analysis:grid', request),
+  analysisInspect: (request) => ipcRenderer.invoke('analysis:inspect', request),
+  analysisGenerate: (request) => ipcRenderer.invoke('analysis:generate', request),
+  analysisCancel: () => ipcRenderer.invoke('analysis:cancel'),
+  analysisSavePlan: (plan) => ipcRenderer.invoke('analysis:save-plan', plan),
+  analysisImportPlan: () => ipcRenderer.invoke('analysis:import-plan'),
+  analysisExport: (plan) => ipcRenderer.invoke('analysis:export', plan),
   health: () => ipcRenderer.invoke('python:health'),
   chooseSource: (kind) => ipcRenderer.invoke('dialog:source', kind),
   chooseOutput: () => ipcRenderer.invoke('dialog:output'),

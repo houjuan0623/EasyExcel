@@ -1,7 +1,7 @@
 {
   "name": "easyexcel-desktop",
   "productName": "EasyExcel",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "engines": {
     "node": ">=22.12.0"
@@ -22,7 +22,9 @@
     "start": "electron .",
     "test:smoke": "node scripts/smoke.cjs",
     "test:packaged": "node scripts/smoke.cjs --packaged",
-    "test:library": "tsc -p tsconfig.electron.json && node --test scripts/script-library.test.cjs"
+    "test:library": "tsc -p tsconfig.electron.json && node --test scripts/script-library.test.cjs",
+    "test:analysis": "node scripts/analysis-smoke.cjs",
+    "test:analysis:packaged": "node scripts/analysis-smoke.cjs --packaged"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

@@ -2,7 +2,7 @@
 
 ## 当前仓库桌面版 / Current desktop
 
-EasyExcel 0.7.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
+EasyExcel 0.8.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLin 的 MIT 许可 ExcelRouter 引擎。
 仓库：https://github.com/houjuan0623/EasyExcel。Electron + TypeScript 只负责界面，Python 负责所有 Excel 读取、处理和绘图。
 免安装 ZIP 完整解压后启动 EasyExcel.exe；内置 Electron、Python 和离线分析库，不要求安装 Microsoft Excel。
 
@@ -12,6 +12,10 @@ EasyExcel 0.7.0 是 Windows x64 离线 Excel 与 Python 工作台，基于 AbeLi
 图表和条件格式引用读取完整范围，累计最多 100,000 个单元格、最远第 100,000 行；单系列最多 5,000 点，最多 16 个对象。
 Python 编辑器支持离线脚本导入、运行、表格/绘图结果和脚本库复用，内置 pandas、NumPy、Matplotlib、openpyxl、xlrd、
 numpy-financial、PyXIRR、SciPy、statsmodels、Seaborn、XlsxWriter、Babel、QuantLib 与 decimal。
+统计分析 dashboard：8 类带选数指导的指标卡/统计图，鼠标拖选矩形、整行整列、跨页到第 100 行后、支持多层表头与按行排布。
+每图最多 4 个区域，可跨 Sheet 或数据源文件夹内的工作簿；同结构按字段名追加，不同指标按共同唯一字段一对一关联，重复键报错并说明未匹配数。
+图表显示来源、统计口径、缺失值与合计/隐藏行列处理说明；最多 12 个组件，支持编辑排序、自动本机保存配置、方案 JSON 导入导出和离线 HTML/PNG/CSV 报告。
+统计每次最多 500,000 个区域单元格、每块 256 列或转置后 256 字段、最远第 100,000 行；不重算公式、缺失不补零、单位标注不换算。报告包含真实统计，不属于匿名包。
 
 边界：图表由 Python 离线重绘，不保证与 Excel 逐像素一致。三维图、SmartArt、复杂条件公式和旧 .xls 图表暂不支持。
 VBA 原表结构导出（默认）：.xlsx/.xlsm 的原 Sheet 名、原表头、原位置和全部单元格公式不改写，保留表对象和命名区域；表头区域外的常量、统计缓存与原 VBA 移除。

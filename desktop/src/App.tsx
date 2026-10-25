@@ -5,12 +5,13 @@ import {
   CircleCheck, CircleHelp, Clock3, Columns3, FileSpreadsheet, Folder, FolderOpen,
   GitBranch, History, LayoutGrid, ListFilter, LoaderCircle, LockKeyhole, Maximize2,
   Merge, Minus, Play, RefreshCw, Search, Settings2, ShieldCheck,
-  Sparkles, Square, Table2, Upload, X, AlertCircle, Eye, Zap, Code2,
+  Sparkles, Square, Table2, Upload, X, AlertCircle, Eye, Zap, Code2, BarChart3,
 } from 'lucide-react';
 import type { GroupPreview, HistoryItem, JobResult, Mode, Preview, SheetChoice, SheetInfo, SourceInfo } from '../shared/types';
 import SheetPreview from './SheetPreview';
 import CodeWorkspace from './CodeWorkspace';
 import PrivacyExport from './PrivacyExport';
+import AnalysisWorkspace from './AnalysisWorkspace';
 import appIcon from '../assets/app.png';
 import { version as appVersion } from '../package.json';
 
@@ -54,7 +55,7 @@ function ResultBanner({ result, onOpen }: { result: JobResult; onOpen: () => voi
 }
 
 export default function App() {
-  const [page, setPage] = useState<'split' | 'merge' | 'code' | 'history'>('split');
+  const [page, setPage] = useState<'split' | 'merge' | 'code' | 'analysis' | 'history'>('split');
   const mode: Mode = page === 'merge' ? 'merge' : 'split';
   const [help, setHelp] = useState(false);
   const [engine, setEngine] = useState<'checking' | 'ready' | 'error'>('checking');
@@ -89,6 +90,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [codeBusy, setCodeBusy] = useState(false);
   const [privacyBusy, setPrivacyBusy] = useState(false);
+  const [analysisBusy, setAnalysisBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
@@ -157,7 +159,7 @@ export default function App() {
   const columns = useMemo(() => [...new Set(selectedSheets[0]?.columns.filter((name) => name && selectedSheets.every((sheet) => sheet.columns.includes(name))) || [])], [selectedSheets]);
   const queryKey = JSON.stringify({ inputPath, selection, column, headerRow, refresh });
   const groupsBusy = page === 'split' && !!column && selection.length > 0 && queryKey !== groupKey;
-  const locked = busy || codeBusy || privacyBusy || reading;
+  const locked = busy || codeBusy || privacyBusy || analysisBusy || reading;
   const eligibleCount = allSheets.filter((sheet) => sheet.selectable).length;
 
   useEffect(() => {
@@ -209,7 +211,7 @@ export default function App() {
     setResult(null);
   }
   function switchPage(next: typeof page) {
-    if (busy || codeBusy || privacyBusy) return;
+    if (busy || codeBusy || privacyBusy || analysisBusy) return;
     setPage(next); setError(''); setResult(null);
   }
   async function openResult(path: string) {
@@ -241,11 +243,12 @@ export default function App() {
       <div className="brand"><img className="brand-mark" src={appIcon} alt="EasyExcel 图标" /><div>EasyExcel<small>表格工作台</small></div></div>
       <div className="nav-label">工作空间</div>
       <nav aria-label="主导航">
-        <button className={page === 'split' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('split')} disabled={busy || codeBusy}><GitBranch size={19} /><span>Excel 拆分</span>{page === 'split' && <span className="nav-dot" />}</button>
-        <button className={page === 'merge' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('merge')} disabled={busy || codeBusy}><Merge size={19} /><span>Excel 汇总</span>{page === 'merge' && <span className="nav-dot" />}</button>
-        <button className={page === 'code' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('code')} disabled={busy || codeBusy}><Code2 size={19} /><span>Python 工作台</span>{page === 'code' && <span className="nav-dot" />}</button>
+        <button className={page === 'split' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('split')} disabled={busy || codeBusy || analysisBusy}><GitBranch size={19} /><span>Excel 拆分</span>{page === 'split' && <span className="nav-dot" />}</button>
+        <button className={page === 'merge' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('merge')} disabled={busy || codeBusy || analysisBusy}><Merge size={19} /><span>Excel 汇总</span>{page === 'merge' && <span className="nav-dot" />}</button>
+        <button className={page === 'code' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('code')} disabled={busy || codeBusy || analysisBusy}><Code2 size={19} /><span>Python 工作台</span>{page === 'code' && <span className="nav-dot" />}</button>
+        <button className={page === 'analysis' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('analysis')} disabled={busy || codeBusy || analysisBusy}><BarChart3 size={19} /><span>统计分析</span>{page === 'analysis' && <span className="nav-dot" />}</button>
         <div className="nav-divider" />
-        <button className={page === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('history')} disabled={busy || codeBusy}><History size={19} /><span>最近任务</span>{history.length > 0 && <span className="nav-count">{history.length}</span>}</button>
+        <button className={page === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => switchPage('history')} disabled={busy || codeBusy || analysisBusy}><History size={19} /><span>最近任务</span>{history.length > 0 && <span className="nav-count">{history.length}</span>}</button>
       </nav>
       <div className="sidebar-bottom">
         <div className="privacy-note"><span className="privacy-icon"><ShieldCheck size={20} /></span><strong>文件，留在你的电脑</strong><p>所有表格均在本地处理<br />无需上传，安心使用</p><span className="offline-pill"><span />100% 本地运行</span></div>
@@ -256,7 +259,7 @@ export default function App() {
 
     <div className="main-shell">
       <header className="topbar">
-        <div className="breadcrumb"><LayoutGrid size={16} /><span>工作空间</span><ChevronRight size={13} /><strong>{page === 'history' ? '最近任务' : page === 'code' ? 'Python 工作台' : mode === 'split' ? 'Excel 拆分' : 'Excel 汇总'}</strong></div>
+        <div className="breadcrumb"><LayoutGrid size={16} /><span>工作空间</span><ChevronRight size={13} /><strong>{page === 'analysis' ? '统计分析' : page === 'history' ? '最近任务' : page === 'code' ? 'Python 工作台' : mode === 'split' ? 'Excel 拆分' : 'Excel 汇总'}</strong></div>
         <div className="topbar-right"><span className="local-label"><LockKeyhole size={13} />本地工作空间</span><div className="window-actions">
           <IconButton title="最小化" onClick={() => api?.window('minimize')}><Minus size={15} /></IconButton>
           <IconButton title="最大化或还原" onClick={() => api?.window('maximize')}><Maximize2 size={13} /></IconButton>
@@ -265,12 +268,14 @@ export default function App() {
       </header>
 
       <main>
-        <div className="page-heading"><div><div className="eyebrow">YOUR DATA, WELL ORGANIZED</div><h1>{page === 'history' ? '每一次处理，都有迹可循。' : page === 'code' ? '用代码，延伸表格的可能。' : mode === 'split' ? '让每份数据，各就其位。' : '把分散的表格，汇在一起。'}</h1><p>{page === 'history' ? '快速找到最近生成的结果，接着完成你的工作。' : page === 'code' ? '导入 AI 编写的脚本，在离线电脑上完成分析、绘图和表格处理。' : mode === 'split' ? '选择工作表，按字段拆分。复杂的表格，也能井井有条。' : '选择需要整理的工作表，可按列名合并，也可分别保存到独立 Sheet。'}</p></div><button className="button guide-button" onClick={() => setHelp(true)}><CircleHelp size={16} />操作指南<ArrowUpRight size={14} /></button></div>
+        <div className="page-heading"><div><div className="eyebrow">YOUR DATA, WELL ORGANIZED</div><h1>{page === 'analysis' ? '从表格，到清晰的分析。' : page === 'history' ? '每一次处理，都有迹可循。' : page === 'code' ? '用代码，延伸表格的可能。' : mode === 'split' ? '让每份数据，各就其位。' : '把分散的表格，汇在一起。'}</h1><p>{page === 'analysis' ? '按图表注解选择区域，跨 Sheet 组合数据，在本机生成你的 dashboard。' : page === 'history' ? '快速找到最近生成的结果，接着完成你的工作。' : page === 'code' ? '导入 AI 编写的脚本，在离线电脑上完成分析、绘图和表格处理。' : mode === 'split' ? '选择工作表，按字段拆分。复杂的表格，也能井井有条。' : '选择需要整理的工作表，可按列名合并，也可分别保存到独立 Sheet。'}</p></div><button className="button guide-button" onClick={() => setHelp(true)}><CircleHelp size={16} />操作指南<ArrowUpRight size={14} /></button></div>
 
         {engine === 'error' && <div className="notice warning" role="alert"><AlertCircle size={18} /><span>{engineError}</span><button className="text-button" onClick={checkEngine}>重新检查</button></div>}
         {error && <div className="notice error" role="alert"><AlertCircle size={18} /><span>{error}</span><IconButton title="关闭提示" onClick={() => setError('')}><X size={15} /></IconButton></div>}
 
-        {page === 'history' ? <section className="card history-card"><CardTitle title="最近处理记录"><span className="subtle">保留最近 20 次 · 仅存于本机</span></CardTitle>{!history.length ? <div className="empty-state"><Clock3 size={40} /><h3>还没有处理记录</h3><p>完成一次拆分或汇总后，结果会出现在这里。</p><button className="button primary" onClick={() => switchPage('split')}>开始第一个任务<ArrowRight size={16} /></button></div> : <div className="history-list">{history.map((item) => <div className="history-row" key={item.id}><span className="file-icon"><FileSpreadsheet size={22} /></span><div><strong>{item.name}</strong><p>{item.mode === 'code' ? 'Python 脚本' : item.mode === 'split' ? 'Excel 拆分' : 'Excel 汇总'} · {new Date(item.date).toLocaleString('zh-CN')} · {item.stopped ? '已停止' : '处理结束'}</p></div><button className="button small" onClick={() => void openResult(item.output)}><FolderOpen size={15} />打开结果</button></div>)}</div>}</section> : <>
+        <div hidden={page !== 'analysis'}><AnalysisWorkspace source={source} reading={reading} ready={engine === 'ready' && !reading && !busy && !codeBusy && !privacyBusy} onChoose={(kind) => void chooseSource(kind)} onSourceChange={(path) => { setInputPath(path); setRefresh((n) => n + 1); }} onBusy={setAnalysisBusy} /></div>
+
+        {page === 'analysis' ? null : page === 'history' ? <section className="card history-card"><CardTitle title="最近处理记录"><span className="subtle">保留最近 20 次 · 仅存于本机</span></CardTitle>{!history.length ? <div className="empty-state"><Clock3 size={40} /><h3>还没有处理记录</h3><p>完成一次拆分或汇总后，结果会出现在这里。</p><button className="button primary" onClick={() => switchPage('split')}>开始第一个任务<ArrowRight size={16} /></button></div> : <div className="history-list">{history.map((item) => <div className="history-row" key={item.id}><span className="file-icon"><FileSpreadsheet size={22} /></span><div><strong>{item.name}</strong><p>{item.mode === 'code' ? 'Python 脚本' : item.mode === 'split' ? 'Excel 拆分' : 'Excel 汇总'} · {new Date(item.date).toLocaleString('zh-CN')} · {item.stopped ? '已停止' : '处理结束'}</p></div><button className="button small" onClick={() => void openResult(item.output)}><FolderOpen size={15} />打开结果</button></div>)}</div>}</section> : <>
           <div className="workflow-strip" aria-label="处理步骤">
             {[['选择数据源', '导入文件或文件夹'], ['选择工作表', '只处理你需要的 Sheet'], [page === 'code' ? '编写并运行代码' : mode === 'split' ? '配置并拆分' : '合并并导出', '结果保存到本地']].map(([title, detail], index) => <div className={`workflow-step ${index === 0 || (index === 1 && source) || (index === 2 && selectedSheets.length) ? 'current' : ''}`} key={title}><span className="workflow-number">{index === 0 && source ? <Check size={15} /> : `0${index + 1}`}</span><div><strong>{title}</strong><small>{detail}</small></div>{index < 2 && <ChevronRight className="step-arrow" size={18} />}</div>)}
           </div>
@@ -366,10 +371,10 @@ export default function App() {
         </>}
         <footer className="workspace-footer"><span className={`engine-status ${engine}`}><span />{engine === 'ready' ? '本地引擎已就绪' : engine === 'checking' ? '正在连接本地引擎…' : '本地引擎未连接'}</span><span>简单处理，专注工作。</span></footer>
       </main>
-      {page !== 'history' && page !== 'code' && <div className="action-dock">
+      {page !== 'history' && page !== 'code' && page !== 'analysis' && <div className="action-dock">
         {busy ? <><div className="dock-progress"><div className="run-summary"><strong>{cancelling ? '正在停止…' : '正在处理数据…'}</strong><span>{Math.round(progress * 100)}%</span></div><progress max={1} value={progress} aria-label="处理进度" /></div><p className="run-detail">{cancelling ? '等待当前操作安全结束，已生成结果将保留。' : logs.filter(Boolean).at(-1) || '正在准备本地处理任务…'}</p><button className="button stop-button" onClick={() => void cancel()} disabled={cancelling}><Square size={13} />停止任务</button></> : <><div className="dock-summary"><span className="dock-icon"><FileSpreadsheet size={20} /></span><div><strong>已选择 <b>{selectedSheets.length}</b> 个 Sheet<span className="summary-separator">/</span>{selection.length} 个文件</strong><p>仅处理勾选的工作表，源文件保持原样</p></div></div><span className="dock-local"><ShieldCheck size={14} />全程本地处理</span><button className="button primary run-button" disabled={!canRun} onClick={() => void start()}><Play size={14} fill="currentColor" />{mode === 'split' ? '开始拆分' : '开始汇总'}<ArrowRight size={17} /></button></>}
       </div>}
     </div>
-    {help && <div className="modal-backdrop" onClick={() => setHelp(false)}><section className="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={(event) => event.stopPropagation()}><div className="card-title"><h2 id="help-title">三步，整理好你的表格</h2><IconButton title="关闭帮助" onClick={() => setHelp(false)}><X size={19} /></IconButton></div><div className="help-steps"><p><span>01</span><strong>选择数据源</strong>拖入一个 Excel 或一个文件夹，也可以点击选择按钮。支持 .xlsx、.xlsm 和 .xls；读取不会运行已有宏。</p><p><span>02</span><strong>勾选需要的 Sheet</strong>默认选中每个文件的首个可处理 Sheet。支持多选、全选、搜索和独立预览；拆分与汇总不处理隐藏 Sheet；VBA 模板会保留其结构。</p><p><span>03</span><strong>设置并开始</strong>拆分时选择共同字段，可开启「同时生成总工作簿」；汇总可按列名合并，或选择「每个表独立一个 Sheet」。结束后点击「查看结果」。</p></div><div className="notice"><ShieldCheck size={18} /><span>Excel 读取、预览、拆分和汇总全部由本机 Python 完成。Electron 界面不会上传文件。</span></div><p className="help-footnote">旧版 Python 界面继续支持查收、方案和加密分发，可使用项目根目录的 main.py 启动。新版提供拆分、普通汇总和离线 Python 工作台。Python 页面可导入脚本、导出 AI 编程说明，或使用内置示例。</p><button className="button primary" onClick={() => setHelp(false)}>开始使用<ArrowRight size={16} /></button></section></div>}
+    {help && <div className="modal-backdrop" onClick={() => setHelp(false)}><section className="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={(event) => event.stopPropagation()}><div className="card-title"><h2 id="help-title">三步，整理好你的表格</h2><IconButton title="关闭帮助" onClick={() => setHelp(false)}><X size={19} /></IconButton></div><div className="help-steps"><p><span>01</span><strong>选择数据源</strong>拖入一个 Excel 或一个文件夹，也可以点击选择按钮。支持 .xlsx、.xlsm 和 .xls；读取不会运行已有宏。</p><p><span>02</span><strong>勾选需要的 Sheet</strong>默认选中每个文件的首个可处理 Sheet。支持多选、全选、搜索和独立预览；拆分与汇总不处理隐藏 Sheet；VBA 模板会保留其结构。</p><p><span>03</span><strong>设置并开始</strong>拆分时选择共同字段，可开启「同时生成总工作簿」；汇总可按列名合并，或选择「每个表独立一个 Sheet」。结束后点击「查看结果」。</p></div><div className="notice"><ShieldCheck size={18} /><span>Excel 读取、预览、拆分和汇总全部由本机 Python 完成。Electron 界面不会上传文件。</span></div><p className="help-footnote">旧版 Python 界面继续支持查收、方案和加密分发，可使用项目根目录的 main.py 启动。新版提供拆分、普通汇总、统计分析 dashboard 和离线 Python 工作台。统计分析支持按图表说明选择区域、跨 Sheet 追加或关联、保存方案和导出离线报告。Python 页面可导入脚本、导出 AI 编程说明，或使用内置示例。</p><button className="button primary" onClick={() => setHelp(false)}>开始使用<ArrowRight size={16} /></button></section></div>}
   </div>;
 }
