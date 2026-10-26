@@ -37,6 +37,7 @@ run(python, [
   '--distpath', join(staging, 'dist'), '--workpath', join(staging, 'work'), '--specpath', staging,
   '--paths', project, '--hidden-import', 'core.collect', '--hidden-import', 'xlrd',
   '--hidden-import', 'matplotlib.backends.backend_agg', '--hidden-import', 'pandas.plotting._matplotlib',
+  '--hidden-import', 'win32timezone', '--hidden-import', 'PIL.ImageGrab',
   '--hidden-import', 'statistics', '--hidden-import', 'sqlite3', '--hidden-import', 'fractions',
   '--hidden-import', 'decimal', '--hidden-import', 'csv', '--hidden-import', 'random',
   '--hidden-import', 'statsmodels.api', '--hidden-import', 'statsmodels.formula.api',

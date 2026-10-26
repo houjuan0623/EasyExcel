@@ -12,3 +12,4 @@ seaborn>=0.13.2,<1
 XlsxWriter>=3.2,<4
 Babel>=2.17,<3
 QuantLib>=1.38,<2
+pywin32==312; sys_platform == 'win32'

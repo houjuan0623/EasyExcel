@@ -28,6 +28,14 @@ export interface AnalysisGrid {
   columns: string[]; rows: string[][]; hiddenRows: number[]; hiddenColumns: number[];
   suggestedRange: string; suggestedHeaderRows: number;
 }
+export interface NativePreview {
+  engine: 'excel'; sheet: string; image: string; width: number; height: number; excelVersion: string;
+  startRow: number; startColumn: number; endRow: number; endColumn: number; totalRows: number; totalColumns: number;
+  rows: { index: number; start: number; size: number }[];
+  columns: { index: number; start: number; size: number }[];
+  cells: Record<string, { formula: string; text: string; missingCache: boolean }>;
+  merges: [number, number, number, number][]; warnings: string[];
+}
 export interface AnalysisCard { id: string; config: AnalysisRequest }
 export interface AnalysisPlan { version: 1; title: string; cards: AnalysisCard[] }
 

@@ -2,9 +2,11 @@
 
 <img src="desktop/assets/app.png" width="72" height="72" alt="EasyExcel 图标" />
 
-**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.8.0**，面向 Windows x64。
+**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.9.0**，面向 Windows x64。
 
 0.8.0 新增统计分析 dashboard：按图表注解选择行、列或区域，支持跨 Sheet 追加和按共同字段关联，由本机 Python 生成 8 类图表、描述统计和离线报告。保留原有 VBA 结构导出与匿名 Python 编程功能。
+
+0.9.0 新增 **Excel 后台原样选区**：由本机 Microsoft Excel 渲染单元格、原有图表和图片，EasyExcel 在原画面内提供拖选、合并格选择、缩放和公式栏，不需要切换到 Excel 窗口。
 
 ## 功能
 
@@ -34,7 +36,7 @@ npm ci
 npm run dev
 ```
 
-首次准备依赖需要联网。最终免安装包携带 Electron、Python 引擎和所需库，目标电脑无需另装 Python、Node.js 或 Microsoft Excel。
+首次准备依赖需要联网。最终免安装包携带 Electron、Python 引擎和所需库，目标电脑无需另装 Python 或 Node.js。统计分析的「Excel 原样视图」需要本机已安装并可正常启动的 Microsoft Excel；其他处理功能和「基础值视图」不依赖 Excel。
 
 ## 生成免安装包
 
@@ -44,7 +46,7 @@ npm run dev
 npm run dist:portable
 ```
 
-生成 `desktop/release/EasyExcel-Portable-0.8.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
+生成 `desktop/release/EasyExcel-Portable-0.9.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
 
 `npm run dist:win` 可生成安装程序；`npm run build` 只编译界面。详细说明见 [桌面版文档](desktop/README.md)。构建产物和依赖目录不提交到 Git。
 

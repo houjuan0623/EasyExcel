@@ -1,5 +1,5 @@
 // Copyright (c) 2026 AbeLin · MIT License
-import type { AnalysisBlock, AnalysisGrid, AnalysisPlan, AnalysisRequest, AnalysisResult, AnalysisSchema } from './analysis';
+import type { AnalysisBlock, AnalysisGrid, AnalysisPlan, AnalysisRequest, AnalysisResult, AnalysisSchema, NativePreview } from './analysis';
 export type Mode = 'split' | 'merge';
 export interface SheetInfo {
   name: string;
@@ -153,6 +153,7 @@ export interface ScriptSave { code: string; name: string; category?: string; not
 export interface ScriptLibrarySnapshot { items: ScriptInfo[]; warnings: string[]; path: string }
 export interface DesktopAPI {
   analysisGrid(request: { inputPath: string; path: string; sheet: string; startRow: number; startColumn: number; includeHidden?: boolean; headerRow?: number }): Promise<AnalysisGrid>;
+  analysisNativePreview(request: { inputPath: string; path: string; sheet: string; startRow: number; startColumn: number; includeHidden?: boolean; showFormulas?: boolean }): Promise<NativePreview>;
   analysisInspect(request: { inputPath: string; blocks: AnalysisBlock[] }): Promise<AnalysisSchema>;
   analysisGenerate(request: AnalysisRequest): Promise<AnalysisResult>;
   analysisCancel(): Promise<void>;

@@ -17,6 +17,10 @@ def main():
     destination = (backend / "_internal").resolve(strict=True)
     runtime = environment()
     pending = [name for name in runtime["libraries"] if name != "decimal"]
+    if sys.platform == "win32":
+        pending.append("pywin32")
+        runtime["excelPreview"] = {"bridge": "pywin32", "version": distribution("pywin32").version,
+                                   "requires": "本机安装并激活的 Microsoft Excel"}
     copied = set()
     while pending:
         name = pending.pop()

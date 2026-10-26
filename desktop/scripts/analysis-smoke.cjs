@@ -39,6 +39,7 @@ async function main() {
     stage = 'range_picker';
     await page.getByRole('button', { name: '选择数据块 1 区域', exact: true }).click();
     const picker = page.getByRole('dialog', { name: '选择分析数据区域', exact: true });
+    await picker.getByLabel('选区渲染方式', { exact: true }).selectOption('basic');
     await picker.locator('[data-analysis-cell="A3"]').waitFor();
     const start = await picker.locator('[data-analysis-cell="A3"]').boundingBox();
     const end = await picker.locator('[data-analysis-cell="D8"]').boundingBox();

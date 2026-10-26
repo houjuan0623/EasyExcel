@@ -271,6 +271,9 @@ def main():
             action = {"analysis_grid": analysis.grid, "analysis_inspect": analysis.inspect,
                       "analysis_generate": analysis.render, "analysis_export": analysis.export_dashboard}[command]
             result = action(request)
+        elif command == "analysis_native_preview":
+            from desktop.native_preview import preview
+            result = preview(request)
         elif command == "code_environment":
             from desktop.code_runner import environment
             result = environment()

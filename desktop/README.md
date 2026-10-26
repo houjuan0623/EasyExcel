@@ -10,6 +10,10 @@ Electron + React + TypeScript 只负责界面、系统文件对话框和进程�
 
 0.8.0 新增统计分析与 dashboard。按图表用途和注解选区，支持跨 Sheet 组合、描述统计、方案复用和离线报告，全部计算仍由本机 Python 完成。
 
+0.9.0 的统计选区默认使用「Excel 原样视图」：Python 通过 Windows COM 调用独立、不可见的本机 Excel，将原生渲染画面与行列几何信息一起回传，在 EasyExcel 内完成选区。支持原图表和图片、真实行高列宽、完整合并格、公式栏、显示公式模式、50%～200% 缩放和分页。需要本机 Microsoft Excel；没有 Excel 时可手动切换「基础值视图」。
+
+原样渲染使用临时只读副本，禁用宏、事件、外部链接更新和公式自动重算，不接管已打开的 Excel。图片生成短暂使用系统剪贴板，完成后恢复，期间用户新复制的内容优先保留。正常结束或后端中止均关闭本次拥有的 Excel 进程。外部连接、活动对象、联网公式和旧式宏表不自动打开；旧版 .xls 可用基础视图或先另存为 .xlsx。原样视图只读，不提供原表编辑或公式重算。
+
 图标资源和重新转换说明见 [assets/README.md](assets/README.md)。
 
 ## 启动
@@ -60,14 +64,14 @@ npm run dist:win
 
 ```text
 desktop/release/
-├── EasyExcel-Setup-0.8.0-x64.exe    可分发的完整安装程序
+├── EasyExcel-Setup-0.9.0-x64.exe    可分发的完整安装程序
 └── win-unpacked/
     └── EasyExcel.exe              打包后程序，可直接运行验证
 ```
 
 安装包名称中的版本来自 `desktop/package.json`。后续修改代码后，在 `desktop` 中重新执行 `npm run dist:win` 即可。`npm run pack:win` 只生成 `win-unpacked` 目录，省略安装程序。
 
-**安装与分发：**将 `EasyExcel-Setup-0.8.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
+**安装与分发：**将 `EasyExcel-Setup-0.9.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
 
 Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyExcelBackend.exe` 及同目录依赖。安装版使用该内置引擎，不依赖 `EXCELROUTER_PYTHON` 或系统 PATH。安装包目前未做代码签名，Windows 可能显示“未知发布者”；正式公开分发时可配置自己的签名证书。
 
@@ -85,7 +89,7 @@ Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyE
 npm run dist:portable
 ```
 
-输出 `desktop/release/EasyExcel-Portable-0.8.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python、Node.js 或 Microsoft Excel，可离线处理表格。
+输出 `desktop/release/EasyExcel-Portable-0.9.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python 或 Node.js，可离线处理表格；只有 Excel 原样选区需要本机 Microsoft Excel。
 
 请保留解压后的全部文件，不要只复制 `.exe`，也不要直接在压缩包内运行。最近任务记录仍保存在当前 Windows 用户的应用数据目录；移动程序文件夹不会迁移这些记录。
 

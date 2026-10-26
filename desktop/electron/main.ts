@@ -8,7 +8,7 @@ import type { CodeEvent, CodeRequest, CodeResult, HistoryItem, JobEvent, JobResu
 import { callPython, desktopRoot, stopPython, terminatePython } from './python';
 import { ScriptLibrary } from './script-library';
 import { parseAnalysisPlan } from '../shared/analysis';
-import type { AnalysisPlan, AnalysisRequest, AnalysisResult } from '../shared/analysis';
+import type { AnalysisPlan, AnalysisRequest, AnalysisResult, NativePreview } from '../shared/analysis';
 
 let window: BrowserWindow;
 let active: { id: string; child: ChildProcessWithoutNullStreams; cancel?: () => void } | null = null;
@@ -56,6 +56,23 @@ function textContent(value: unknown): string {
 }
 
 function registerHandlers() {
+  let nativeQueue: Promise<unknown> = Promise.resolve();
+  const nativeReads = new Map<string, Promise<NativePreview>>();
+  handle('analysis:native-preview', (request: Record<string, unknown>) => {
+    if (!request || typeof request !== 'object') throw new Error('原样选区请求无效');
+    const key = JSON.stringify(request);
+    if (nativeReads.has(key)) return nativeReads.get(key)!;
+    if (nativeReads.size >= 3) throw new Error('原样预览正在处理中，请稍后重试');
+    // 相同读取合并，其他读取排队，不能在 Excel 使用剪贴板时终止前一页进程。
+    const pending = nativeQueue.then(async () => {
+      const run = callPython<NativePreview>({ ...request, command: 'analysis_native_preview' });
+      const timer = setTimeout(() => terminatePython(run.child), 120000);
+      try { return await run.promise; } finally { clearTimeout(timer); }
+    });
+    nativeReads.set(key, pending);
+    nativeQueue = pending.catch(() => {}).finally(() => nativeReads.delete(key));
+    return pending;
+  });
   for (const name of ['grid', 'inspect']) {
     handle(`analysis:${name}`, async (request: Record<string, unknown>) => {
       if (!request || typeof request !== 'object') throw new Error('分析请求无效');

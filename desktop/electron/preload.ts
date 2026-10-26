@@ -4,6 +4,7 @@ import type { CodeEvent, DesktopAPI, JobEvent } from '../shared/types';
 
 const api: DesktopAPI = {
   analysisGrid: (request) => ipcRenderer.invoke('analysis:grid', request),
+  analysisNativePreview: (request) => ipcRenderer.invoke('analysis:native-preview', request),
   analysisInspect: (request) => ipcRenderer.invoke('analysis:inspect', request),
   analysisGenerate: (request) => ipcRenderer.invoke('analysis:generate', request),
   analysisCancel: () => ipcRenderer.invoke('analysis:cancel'),
