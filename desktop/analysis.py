@@ -849,9 +849,9 @@ def html_table(table):
 def export_dashboard(request):
     """重新核对源文件后原子写入报告，导出真实统计结果而非脱敏资料。"""
     title = text(request.get("title"), "看板标题", 120)
-    cards = request.get("cards")
-    if not isinstance(cards, list) or not 1 <= len(cards) <= 12:
-        raise ValueError("一个 dashboard 可包含 1～12 个图表")
+    from desktop.dashboard import dashboard_cards, dashboard_html
+
+    cards = dashboard_cards(request)
     root = Path(request["outputPath"]).resolve(strict=True)
     if not root.is_dir():
         raise ValueError("请选择报告保存目录")
@@ -859,7 +859,6 @@ def export_dashboard(request):
     results = [render(card["config"]) for card in cards]
     temporary = root / ("." + output.name)
     temporary.mkdir()
-    sections = []
     try:
         for index, result in enumerate(results, 1):
             if result["image"]:
@@ -868,49 +867,10 @@ def export_dashboard(request):
             (temporary / f"chart_{index:02d}_statistics.csv").write_text(
                 csv_text(result["statistics"]), encoding="utf-8"
             )
-            visual = (
-                '<img src="' + result["image"] + '" alt="' + escape(result["title"], quote=True) + '">'
-                if result["image"]
-                else '<div class="metric">'
-                + escape(str(result["metric"]))
-                + " <small>"
-                + escape(result["unit"])
-                + "</small></div>"
-            )
-            warnings = "".join("<li>" + escape(w) + "</li>" for w in result["warnings"])
-            source = "；".join(
-                f"{s['file']} / {s['sheet']}!{s['range']}（{s['rows']} 条记录）" for s in result["sources"]
-            )
-            sections.append(
-                "<section><h2>"
-                + escape(result["title"])
-                + "</h2>"
-                + visual
-                + "<p>"
-                + escape(result["method"])
-                + "</p><p>"
-                + escape(result["note"])
-                + '</p><p class="source">'
-                + escape(source)
-                + "</p><ul>"
-                + warnings
-                + "</ul><details><summary>图表数据与描述统计</summary>"
-                + html_table(result["table"])
-                + html_table(result["statistics"])
-                + "</details></section>"
-            )
-        document = (
-            """<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>"""
-            + escape(title)
-            + """</title><style>body{margin:0;padding:32px;background:#f2f6f3;color:#284c3a;font:14px 'Microsoft YaHei',sans-serif}header{max-width:1200px;margin:auto}main{max-width:1200px;margin:24px auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(440px,1fr));gap:20px}section{padding:22px;background:white;border:1px solid #d7e3db;border-radius:14px;min-width:0}h1{font-size:30px}h2{font-size:18px}img{width:100%}.metric{font-size:48px;padding:28px 0;color:#188263}small{font-size:16px}.source,li{font-size:12px;color:#6b7a70}p{line-height:1.8}.scroll{overflow:auto}table{border-collapse:collapse;white-space:nowrap;font-size:12px;margin:14px 0}th,td{padding:7px;border-bottom:1px solid #e0e8e2}summary{cursor:pointer}@media(max-width:600px){body{padding:12px}main{display:block}section{margin-bottom:16px}}@media print{body{background:white;padding:0}main{display:block}section{break-inside:avoid}details{display:block}}</style><header><p>EASYEXCEL · 本地统计分析</p><h1>"""
-            + escape(title)
-            + "</h1><p>此报告包含真实统计结果。公式使用工作簿已保存的缓存，未进行重算；数据来源与统计口径见每张图。</p></header><main>"
-            + "".join(sections)
-            + "</main></html>"
-        )
+        document = dashboard_html(title, cards, results, html_table)
         (temporary / "dashboard.html").write_text(document, encoding="utf-8")
         (temporary / "dashboard-plan.json").write_text(
-            json.dumps({"version": 1, "title": title, "cards": cards}, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps({"version": 2, "canvas": {"width": 1920, "height": 1080}, "title": title, "cards": cards}, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         os.replace(temporary, output)
     finally:

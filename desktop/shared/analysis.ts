@@ -1,4 +1,5 @@
 // Copyright (c) 2026 AbeLin · MIT License
+import { arrangeLayouts, DASHBOARD_CANVAS, validLayout, type ChartLayout } from './dashboard-layout';
 export type ChartKind = 'metric' | 'bar' | 'line' | 'pie' | 'histogram' | 'scatter' | 'box' | 'correlation';
 export interface AnalysisBlock {
   id: string; name: string; path: string; sheet: string; range: string; headerRows: number;
@@ -36,8 +37,8 @@ export interface NativePreview {
   cells: Record<string, { formula: string; text: string; missingCache: boolean }>;
   merges: [number, number, number, number][]; warnings: string[];
 }
-export interface AnalysisCard { id: string; config: AnalysisRequest }
-export interface AnalysisPlan { version: 1; title: string; cards: AnalysisCard[] }
+export interface AnalysisCard { id: string; config: AnalysisRequest; layout: ChartLayout }
+export interface AnalysisPlan { version: 2; canvas: typeof DASHBOARD_CANVAS; title: string; cards: AnalysisCard[] }
 
 // 方案只含配置，不接受代码或结果图片；导入后必须由 Python 重新核对数据和字段。
 export function parseAnalysisPlan(value: unknown): AnalysisPlan {
@@ -48,9 +49,13 @@ export function parseAnalysisPlan(value: unknown): AnalysisPlan {
   const identifier = (v: unknown): string => { const s = str(v, 80); if (!/^[a-zA-Z0-9_-]+$/.test(s) || ['__proto__', 'constructor', 'prototype'].includes(s)) throw new Error('分析方案标识无效'); return s; };
   const map = (v: unknown): Record<string, string> => Object.fromEntries(Object.entries(obj(v)).map(([k, x]) => [str(k), str(x, 1000)]));
   const root = obj(value);
-  if (root.version !== 1 || !Array.isArray(root.cards) || root.cards.length > 12) throw new Error('分析方案版本或图表数量无效');
-  const cards = root.cards.map((raw: unknown): AnalysisCard => {
+  if (![1, 2].includes(root.version) || !Array.isArray(root.cards) || root.cards.length > 12) throw new Error('分析方案版本或图表数量无效');
+  if (root.version === 2 && (root.canvas?.width !== 1920 || root.canvas?.height !== 1080)) throw new Error('分析看板画布必须为 1920 × 1080（16:9）');
+  const legacy = arrangeLayouts(root.cards.length);
+  const cards = root.cards.map((raw: unknown, index: number): AnalysisCard => {
     const card = obj(raw), c = obj(card.config);
+    const layout = root.version === 1 ? legacy[index] : card.layout;
+    if (!validLayout(layout)) throw new Error('图表位置或尺寸超出画布范围');
     if (!Array.isArray(c.blocks) || c.blocks.length < 1 || c.blocks.length > 4 || !Array.isArray(c.y) || c.y.length > 6) throw new Error('分析方案数据区域或数值字段数量无效');
     const blocks = c.blocks.map((b: unknown): AnalysisBlock => {
       const x = obj(b);
@@ -59,7 +64,7 @@ export function parseAnalysisPlan(value: unknown): AnalysisPlan {
         headerRows: num(x.headerRows, 0, 10), orientation: choice(x.orientation, ['columns', 'rows']), includeHidden: x.includeHidden === true, skipTotals: x.skipTotals !== false };
     });
     if (new Set(blocks.map((b: AnalysisBlock) => b.id)).size !== blocks.length) throw new Error('数据块标识重复');
-    return { id: identifier(card.id), config: { inputPath: str(c.inputPath, 3000), blocks, token: str(c.token, 100),
+    return { id: identifier(card.id), layout: { x: layout.x, y: layout.y, width: layout.width, height: layout.height }, config: { inputPath: str(c.inputPath, 3000), blocks, token: str(c.token, 100),
       kind: choice(c.kind, ['metric', 'bar', 'line', 'pie', 'histogram', 'scatter', 'box', 'correlation']),
       title: str(c.title, 120), unit: str(c.unit, 30), note: str(c.note, 1000),
       combine: choice(c.combine, ['single', 'append', 'join']), joinKeys: map(c.joinKeys), joinType: choice(c.joinType, ['inner', 'left']),
@@ -68,5 +73,5 @@ export function parseAnalysisPlan(value: unknown): AnalysisPlan {
       bins: num(c.bins, 3, 50), limit: num(c.limit, 1, 60), fieldLabels: map(c.fieldLabels) } };
   });
   if (new Set(cards.map((c: AnalysisCard) => c.id)).size !== cards.length) throw new Error('图表标识重复');
-  return { version: 1, title: str(root.title, 120), cards };
+  return { version: 2, canvas: { ...DASHBOARD_CANVAS }, title: str(root.title, 120), cards };
 }

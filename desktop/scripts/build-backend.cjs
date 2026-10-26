@@ -35,6 +35,7 @@ run(python, [
   '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--console',
   '--name', 'EasyExcelBackend', '--icon', join(desktop, 'assets/app.ico'),
   '--distpath', join(staging, 'dist'), '--workpath', join(staging, 'work'), '--specpath', staging,
+  '--add-data', join(desktop, 'shared/dashboard-canvas.css') + ';desktop/shared',
   '--paths', project, '--hidden-import', 'core.collect', '--hidden-import', 'xlrd',
   '--hidden-import', 'matplotlib.backends.backend_agg', '--hidden-import', 'pandas.plotting._matplotlib',
   '--hidden-import', 'win32timezone', '--hidden-import', 'PIL.ImageGrab',

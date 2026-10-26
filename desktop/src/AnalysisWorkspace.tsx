@@ -1,10 +1,12 @@
 // Copyright (c) 2026 AbeLin · MIT License
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, LineChart, PieChart, ScatterChart, Box, Grid2X2, Hash, ChartColumn, Plus, Trash2, Save, Upload, Download, RefreshCw, MousePointer2, Pencil, ChevronUp, ChevronDown, Square, LoaderCircle, FolderOpen } from 'lucide-react';
+import { BarChart3, LineChart, PieChart, ScatterChart, Box, Grid2X2, Hash, ChartColumn, Plus, Trash2, Save, Upload, Download, RefreshCw, MousePointer2, Square, LoaderCircle, FolderOpen } from 'lucide-react';
 import type { SourceInfo } from '../shared/types';
 import { parseAnalysisPlan, type AnalysisBlock, type AnalysisCard, type AnalysisField, type AnalysisPlan, type AnalysisRequest, type AnalysisResult, type AnalysisSchema, type AnalysisTable, type ChartKind } from '../shared/analysis';
 import AnalysisRangePicker, { columnLabel } from './AnalysisRangePicker';
 import './analysis.css';
+import DashboardCanvas from './DashboardCanvas';
+import { DASHBOARD_CANVAS, nextLayout } from '../shared/dashboard-layout';
 
 const api = window.desktop;
 const message = (e: unknown) => e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : String(e);
@@ -24,7 +26,7 @@ const templates = [
 type Card = AnalysisCard & { result?: AnalysisResult };
 function initialPlan(): AnalysisPlan {
   try { const stored = localStorage.getItem(storageKey); if (stored) return parseAnalysisPlan(JSON.parse(stored)); } catch { /* 旧版或损坏草稿不执行，用户仍可导入已保存的方案。 */ }
-  return { version: 1, title: '我的统计分析看板', cards: [] };
+  return { version: 2, canvas: { ...DASHBOARD_CANVAS }, title: '我的统计分析看板', cards: [] };
 }
 function blankDraft(inputPath = '', blocks: AnalysisBlock[] = []): AnalysisRequest {
   return { inputPath, blocks, token: '', kind: 'bar', title: '分类对比', unit: '', note: '', combine: 'single', joinKeys: {}, joinType: 'inner', x: '', y: [], aggregation: 'sum', sort: 'source', timeBucket: 'none', bins: 12, limit: 20, fieldLabels: {} };
@@ -57,6 +59,7 @@ export default function AnalysisWorkspace({ source, ready, reading, onChoose, on
   const [busy, setBusy] = useState(''), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [picker, setPicker] = useState<string | null>(null), [cardErrors, setCardErrors] = useState<Record<string, string>>({});
   const [output, setOutput] = useState('');
+  const [boardEpoch, setBoardEpoch] = useState(0);
   const editor = useRef<HTMLDivElement>(null), cancelled = useRef(false);
   const choices = useMemo(() => source?.workbooks.flatMap((b) => b.sheets.filter((s) => s.state === 'visible').map((s) => ({ ...s, path: b.path, file: b.name }))) || [], [source]);
   const signature = JSON.stringify({ inputPath: draft.inputPath, blocks: draft.blocks });
@@ -65,9 +68,9 @@ export default function AnalysisWorkspace({ source, ready, reading, onChoose, on
   const template = templates.find((t) => t.kind === draft.kind)!;
   const singleY = ['metric', 'pie', 'histogram', 'scatter'].includes(draft.kind);
   const needsX = ['bar', 'line', 'pie', 'scatter'].includes(draft.kind);
-  const plan = (): AnalysisPlan => ({ version: 1, title, cards: cards.map(({ id, config }) => ({ id, config })) });
+  const plan = (): AnalysisPlan => ({ version: 2, canvas: { ...DASHBOARD_CANVAS }, title, cards: cards.map(({ id, config, layout }) => ({ id, config, layout })) });
   useEffect(() => { onBusy(!!busy); return () => onBusy(false); }, [busy, onBusy]);
-  useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify({ version: 1, title, cards: cards.map(({ id, config }) => ({ id, config })) })); } catch { /* 可通过保存方案按钮落盘。 */ } }, [title, cards]);
+  useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify({ version: 2, canvas: { ...DASHBOARD_CANVAS }, title, cards: cards.map(({ id, config, layout }) => ({ id, config, layout })) })); } catch { /* 可通过保存方案按钮落盘。 */ } }, [title, cards]);
   function newBlock(index = 0): AnalysisBlock {
     const sheet = choices[0];
     const header = Math.max(1, sheet?.headerRow || 1), columns = Math.max(1, sheet?.columns.length || 1);
@@ -122,10 +125,10 @@ export default function AnalysisWorkspace({ source, ready, reading, onChoose, on
     if (!preview) return;
     const config = { ...draft, fieldLabels: Object.fromEntries(fields.map((f) => [f.id, f.name])) };
     if (editingId) {
-      setCards((old) => old.map((c) => c.id === editingId ? { id: c.id, config, result: preview } : c));
+      setCards((old) => old.map((c) => c.id === editingId ? { ...c, config, result: preview } : c));
       setCardErrors((old) => { const next = { ...old }; delete next[editingId]; return next; });
     }
-    else setCards((old) => [...old, { id: id(), config, result: preview }]);
+    else setCards((old) => [...old, { id: id(), config, result: preview, layout: nextLayout(old.map((c) => c.layout), config.kind === 'metric') }]);
     setNotice(editingId ? '看板图表已更新' : '图表已加入看板'); setEditingId(null); setPreview(null);
   }
   function editCard(card: Card) {
@@ -151,7 +154,7 @@ export default function AnalysisWorkspace({ source, ready, reading, onChoose, on
     if (!api) return; setError('');
     try {
       const value = await api.analysisImportPlan(); if (!value) return;
-      setTitle(value.title); setCards(value.cards); setCardErrors({}); setOutput('');
+      setTitle(value.title); setCards(value.cards); setCardErrors({}); setOutput(''); setBoardEpoch((old) => old + 1);
       setNotice('已导入配置。点击“刷新全部图表”读取本机数据；不会自动执行脚本。');
     } catch (e) { setError(message(e)); }
   }
@@ -203,11 +206,7 @@ export default function AnalysisWorkspace({ source, ready, reading, onChoose, on
       <div className="analysis-board-heading"><div><span className="eyebrow">DASHBOARD · 本地看板</span><input aria-label="Dashboard 标题" value={title} maxLength={120} disabled={!!busy} onChange={(e) => setTitle(e.target.value)} /><p>{cards.length} / 12 个组件 · 配置自动保存在本机，重新打开后刷新数据</p></div><div className="analysis-board-actions"><button className="button small" disabled={!!busy} onClick={() => void importPlan()}><Upload size={14} />导入方案</button><button className="button small" disabled={!!busy || !cards.length} onClick={async () => { try { const path = await api?.analysisSavePlan(plan()); if (path) setNotice('分析方案已保存：' + path); } catch (e) { setError(message(e)); } }}><Save size={14} />保存方案</button><button className="button small" disabled={!!busy || !cards.length || !ready} onClick={() => void refreshCards(cards)}><RefreshCw size={14} />刷新全部图表</button><button className="button primary small" disabled={!!busy || !cards.length || cards.some((c) => !c.result || cardErrors[c.id]) || !title.trim()} onClick={() => void exportReport()}><Download size={14} />导出离线报告</button></div></div>
       <p className="analysis-report-note">报告包含真实统计结果、图表和来源，保存在本机；需要给 AI 的脱敏资料请使用“脱敏导出”。</p>
       {output && <button className="button small" onClick={() => void api?.openOutput(output).catch((e) => setError(message(e)))}><FolderOpen size={14} />打开报告文件夹</button>}
-      {!cards.length ? <div className="analysis-empty-board"><Grid2X2 size={40} /><h3>把你的分析组合成一张看板</h3><p>上方生成预览后点击“加入 dashboard”。例如：总金额指标卡 + 部门对比 + 月度趋势。</p></div> : <div className="analysis-card-grid">{cards.map((card, index) => <article className={`analysis-dashboard-card ${card.config.kind === 'metric' ? 'metric-card' : ''}`} key={card.id}>
-        <header><h3>{card.config.title}</h3><div><button className="icon-button" aria-label={`上移图表 ${index+1}`} disabled={!!busy || index === 0} onClick={() => setCards((old) => { const next = [...old]; [next[index-1],next[index]] = [next[index],next[index-1]]; return next; })}><ChevronUp size={15} /></button><button className="icon-button" aria-label={`下移图表 ${index+1}`} disabled={!!busy || index === cards.length-1} onClick={() => setCards((old) => { const next = [...old]; [next[index],next[index+1]] = [next[index+1],next[index]]; return next; })}><ChevronDown size={15} /></button><button className="icon-button" aria-label={`编辑图表 ${index+1}`} disabled={!!busy} onClick={() => editCard(card)}><Pencil size={14} /></button><button className="icon-button" aria-label={`刷新图表 ${index+1}`} disabled={!!busy || !ready} onClick={() => void refreshCards([card])}><RefreshCw size={14} /></button><button className="icon-button" aria-label={`删除图表 ${index+1}`} disabled={!!busy} onClick={() => setCards((old) => old.filter((c) => c.id !== card.id))}><Trash2 size={14} /></button></div></header>
-        {cardErrors[card.id] && <p className="analysis-error">{cardErrors[card.id]}。下方如有图表，是上次成功生成的结果。</p>}
-        {card.result ? <ResultView result={card.result} compact /> : <div className="analysis-card-pending"><RefreshCw size={24} /><p>方案已载入，刷新后生成本机数据的图表。</p></div>}
-      </article>)}</div>}
+      {!cards.length ? <div className="analysis-empty-board"><Grid2X2 size={40} /><h3>把你的分析组合成一张看板</h3><p>上方生成预览后点击“加入 dashboard”。例如：总金额指标卡 + 部门对比 + 月度趋势。</p></div> : <DashboardCanvas key={boardEpoch} title={title} cards={cards} errors={cardErrors} busy={!!busy} ready={ready} onChange={setCards} onEdit={editCard} onRefresh={(card) => void refreshCards([card])} renderDetails={(result) => <ResultView result={result} />} />}
     </section>
     {picker && draft.blocks.find((b) => b.id === picker) && <AnalysisRangePicker inputPath={draft.inputPath} block={draft.blocks.find((b) => b.id === picker)!} onClose={() => setPicker(null)} onApply={(range) => { changeBlock(picker, { range }); setPicker(null); }} />}
   </section>;

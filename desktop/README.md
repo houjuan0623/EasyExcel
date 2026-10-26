@@ -64,14 +64,14 @@ npm run dist:win
 
 ```text
 desktop/release/
-├── EasyExcel-Setup-0.9.0-x64.exe    可分发的完整安装程序
+├── EasyExcel-Setup-0.10.0-x64.exe    可分发的完整安装程序
 └── win-unpacked/
     └── EasyExcel.exe              打包后程序，可直接运行验证
 ```
 
 安装包名称中的版本来自 `desktop/package.json`。后续修改代码后，在 `desktop` 中重新执行 `npm run dist:win` 即可。`npm run pack:win` 只生成 `win-unpacked` 目录，省略安装程序。
 
-**安装与分发：**将 `EasyExcel-Setup-0.9.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
+**安装与分发：**将 `EasyExcel-Setup-0.10.0-x64.exe` 发给使用者，双击、选择安装目录并完成向导，再通过桌面或开始菜单的 EasyExcel 快捷方式启动。默认安装到当前用户目录；使用者不需要安装 Python、Node.js 或项目源码。若使用 `win-unpacked`，必须复制整个目录，不能只拷贝其中的 `.exe`。
 
 Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyExcelBackend.exe` 及同目录依赖。安装版使用该内置引擎，不依赖 `EXCELROUTER_PYTHON` 或系统 PATH。安装包目前未做代码签名，Windows 可能显示“未知发布者”；正式公开分发时可配置自己的签名证书。
 
@@ -89,7 +89,7 @@ Excel 操作仍由安装包中的 Python 引擎执行：`resources/backend/EasyE
 npm run dist:portable
 ```
 
-输出 `desktop/release/EasyExcel-Portable-0.9.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python 或 Node.js，可离线处理表格；只有 Excel 原样选区需要本机 Microsoft Excel。
+输出 `desktop/release/EasyExcel-Portable-0.10.0-x64.zip`，包含完整的 Electron 程序、Python 引擎、离线分析依赖和中文使用说明（版本号随 `package.json` 更新）。将 ZIP 放到 Windows 64 位电脑，右键「全部解压缩」到独立文件夹，再双击其中的 `EasyExcel.exe` 即可。无需安装程序、Python 或 Node.js，可离线处理表格；只有 Excel 原样选区需要本机 Microsoft Excel。
 
 请保留解压后的全部文件，不要只复制 `.exe`，也不要直接在压缩包内运行。最近任务记录仍保存在当前 Windows 用户的应用数据目录；移动程序文件夹不会迁移这些记录。
 
@@ -134,7 +134,9 @@ Remove-Item Env:\EXCELROUTER_PACKAGED_EXE
 
 点击「读取数据并检查字段」确认样例和口径，再绑定字段生成预览、加入看板。同结构记录按字段名追加；不同指标通过单一共同字段一对一关联，拒绝重复键造成的记录放大。空键、未匹配、缺失公式缓存、隐藏行列和合计记录的处理会显示。数值不自动补零，单位只作标注。
 
-看板最多 12 张图，可编辑、排序、刷新、移除；配置自动本机保存并支持导出/导入 JSON。离线报告包含自包含 HTML、图表 PNG、图表数据与描述统计 CSV。真实结果只写用户选择的本机目录，不属于脱敏包。选区每张图最多 4 块、500,000 个单元格，每块最多 256 列（转置后最多 256 字段），最远第 100,000 行，单任务最多 5 分钟。
+0.10.0 的看板使用固定 1920 × 1080（16:9）画布。支持拖动标题、八方向调整大小、X/Y/宽/高数值输入、12 px 网格吸附、图层前后调整、自动排列、布局撤销/重做和等比大屏预览。非 16:9 窗口留白，不拉伸图表。新卡片先找空位，无空位叠放，不自动移动已有图表。
+
+看板最多 12 张图，可编辑、刷新、移除；配置自动本机保存并支持导出/导入 JSON。方案升级为 v2，保存画布和每张图的逻辑坐标；兼容导入 v1 并自动排列。离线报告包含保持同样布局的自包含 HTML（SVG viewBox + foreignObject，无脚本）、图表 PNG、图表数据与描述统计 CSV。画布只显示摘要，双击图表可看完整注解和统计；HTML 的明细位于画布下方。应用和导出共用 dashboard-canvas.css，PyInstaller 必须随包携带这份样式文件。真实结果只写用户选择的本机目录，不属于脱敏包。选区每张图最多 4 块、500,000 个单元格，每块最多 256 列（转置后最多 256 字段），最远第 100,000 行，单任务最多 5 分钟。
 
 完整步骤、图表对照表、关联方式、统计口径和测试入口见 [统计分析指南](../docs/统计分析指南.md)。源表内嵌图表的「预览」和此处根据用户选区新生成的统计图相互独立。
 

@@ -3,6 +3,7 @@ const { _electron: electron } = require('playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { join, resolve } = require('node:path');
+const { layoutInteractions, verifyReport, plan: storedPlan } = require('./layout-smoke.cjs');
 const { tmpdir } = require('node:os');
 const { spawnSync } = require('node:child_process');
 const root = resolve(__dirname, '..');
@@ -98,9 +99,11 @@ async function main() {
     await page.getByRole('button', { name: '加入 dashboard', exact: true }).click();
     await page.locator('.analysis-board').scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(scratch, '02-dashboard.png') });
-    await page.getByRole('button', { name: '上移图表 3', exact: true }).click();
-    await page.getByRole('button', { name: '上移图表 2', exact: true }).click();
+    await page.getByRole('button', { name: '后移一层', exact: true }).click();
+    await page.getByRole('button', { name: '后移一层', exact: true }).click();
     assert.ok(await page.locator('.analysis-dashboard-card').first().getAttribute('class').then(v => v.includes('metric-card')));
+    stage = 'layout_interactions';
+    const customLayout = await layoutInteractions(app, page, scratch);
     stage = 'save_export';
     const saved = join(scratch, 'analysis-plan.json');
     await app.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, saved);
@@ -116,6 +119,7 @@ async function main() {
     assert.ok(html.includes('data:image/png;base64,'));
     assert.ok(html.includes('726000'));
     assert.ok(fs.existsSync(join(scratch, report, 'chart_03_data.csv')));
+    await verifyReport(app, join(scratch, report, 'dashboard.html'), customLayout, scratch);
     stage = 'persistence';
     await page.getByRole('button', { name: 'Excel 拆分', exact: true }).click();
     await page.getByRole('button', { name: '统计分析', exact: true }).click();
@@ -125,6 +129,7 @@ async function main() {
     await page.getByRole('button', { name: '统计分析', exact: true }).click();
     assert.equal(await page.locator('.analysis-dashboard-card').count(), 3);
     assert.equal(await page.locator('.analysis-card-pending').count(), 3);
+    assert.deepEqual((await storedPlan(page)).cards, customLayout.cards);
     await app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, saved);
     await page.getByRole('button', { name: '导入方案', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.analysis-notice')?.textContent.includes('已导入配置'));
@@ -140,18 +145,20 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('.analysis-card-pending').length === 3);
     await page.getByRole('button', { name: '刷新全部图表', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.analysis-busy'));
-    assert.equal(await page.locator('.analysis-dashboard-card .analysis-error').count(), 1);
+    assert.equal(await page.locator('.analysis-dashboard-card .dashboard-tile-status.error').count(), 1);
     assert.equal(await page.getByRole('button', { name: '导出离线报告', exact: true }).isDisabled(), true);
+    await page.getByLabel('布局图表', { exact: true }).selectOption(changed.cards[0].id);
     await page.getByRole('button', { name: '编辑图表 1', exact: true }).click();
     await page.getByRole('button', { name: '读取数据并检查字段', exact: true }).click();
     await page.getByLabel('数值字段 预算金额', { exact: true }).check();
     await page.getByRole('button', { name: '生成图表预览', exact: true }).click();
     await page.locator('.analysis-live-preview .analysis-metric strong').waitFor();
     await page.getByRole('button', { name: '更新看板图表', exact: true }).click();
-    assert.equal(await page.locator('.analysis-dashboard-card .analysis-error').count(), 0);
+    assert.equal(await page.locator('.analysis-dashboard-card .dashboard-tile-status.error').count(), 0);
     assert.equal(await page.getByRole('button', { name: '导出离线报告', exact: true }).isEnabled(), true);
+    assert.deepEqual((await storedPlan(page)).cards.map(c => c.layout), customLayout.cards.map(c => c.layout));
     assert.equal(errors.length, 0, errors.join('\n'));
-    console.log(JSON.stringify({ ok: true, packaged, charts: 3, completeRecords: 120, exactMetric: 726000, crossSheetJoin: true, rangePickerAfterRow100: true, savedAndReloaded: true, editedAfterRefreshError: true, scratch }));
+    console.log(JSON.stringify({ ok: true, packaged, charts: 3, completeRecords: 120, exactMetric: 726000, crossSheetJoin: true, rangePickerAfterRow100: true, savedAndReloaded: true, layoutDragResize: true, scaled16by9: true, offlineLayout: true, editedAfterRefreshError: true, scratch }));
   } catch (error) { fs.writeFileSync(join(scratch, 'error.txt'), String(error.stack)); console.error('Failed stage:', stage); throw error; }
   finally { await app.close(); }
 }

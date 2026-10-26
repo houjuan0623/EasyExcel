@@ -310,7 +310,7 @@ def test_local_report_is_self_contained_and_escapes_html_and_csv(book, tmp_path)
     assert "&lt;script&gt;" in html and "<script>" not in html
     assert "default-src" in html and "http://" not in html and "https://" not in html
     assert (folder / "chart_01_statistics.csv").exists()
-    assert json.loads((folder / "dashboard-plan.json").read_text(encoding="utf-8"))["version"] == 1
+    assert json.loads((folder / "dashboard-plan.json").read_text(encoding="utf-8"))["version"] == 2
     assert analysis.csv_text({"columns": ["=cmd"], "rows": [["@evil"]]}) == "\ufeff'=cmd\r\n'@evil\r\n"
     assert sha256(book.read_bytes()).hexdigest() == original
     stale = {**req, "token": "changed"}
@@ -318,6 +318,47 @@ def test_local_report_is_self_contained_and_escapes_html_and_csv(book, tmp_path)
     with pytest.raises(ValueError):
         analysis.export_dashboard({**plan, "cards": [{"id": "x", "config": stale}]})
     assert set(tmp_path.iterdir()) == before
+
+
+def test_dashboard_export_preserves_custom_layout_and_layer_order(book, tmp_path):
+    req = request(book, "metric")
+    layout = {"x": 85, "y": 145, "width": 700, "height": 350}
+    plan = {"version": 2, "canvas": {"width": 1920, "height": 1080}, "title": "可布局看板",
+            "cards": [{"id": "metric", "config": req, "layout": layout},
+                      {"id": "above", "config": req, "layout": {**layout, "x": 200}}], "outputPath": str(tmp_path)}
+    output = Path(analysis.export_dashboard(plan)["output"])
+    stored = json.loads((output / "dashboard-plan.json").read_text(encoding="utf-8"))
+    assert stored["cards"] == plan["cards"]
+    assert stored["canvas"] == plan["canvas"]
+    document = (output / "dashboard.html").read_text(encoding="utf-8")
+    assert 'viewBox="0 0 1920 1080"' in document
+    assert 'left:85px;top:145px;width:700px;height:350px;z-index:1' in document
+    assert document.index('data-card-id="metric"') < document.index('data-card-id="above"')
+    assert '<script' not in document and 'object-fit: contain' in document
+
+
+@pytest.mark.parametrize("layout", [None, {}, {"x": True, "y": 120, "width": 600, "height": 400},
+                                   {"x": 24, "y": 120, "width": 1900, "height": 400},
+                                   {"x": "24px", "y": 120, "width": 600, "height": 400},
+                                   {"x": 24, "y": 0, "width": 600, "height": 400}])
+def test_invalid_dashboard_layout_fails_without_creating_report(book, tmp_path, layout):
+    before = set(tmp_path.iterdir())
+    with pytest.raises(ValueError):
+        analysis.export_dashboard({"version": 2, "canvas": {"width": 1920, "height": 1080}, "title": "布局",
+                                   "cards": [{"id": "test", "config": {}, "layout": layout}], "outputPath": str(tmp_path)})
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_legacy_dashboard_arrangement_matches_canvas_contract():
+    from desktop.dashboard import dashboard_cards
+    for count in range(1, 13):
+        cards = dashboard_cards({"version": 1, "cards": [{"id": str(i), "config": {}} for i in range(count)]})
+        for card in cards:
+            r = card["layout"]
+            assert r["x"] >= 24 and r["y"] >= 120
+            assert r["width"] >= 240 and r["height"] >= 168
+            assert r["x"] + r["width"] <= 1896 and r["y"] + r["height"] <= 1056
+    assert cards[-1]["layout"] == {"x": 1446, "y": 760, "width": 450, "height": 296}
 
 
 def test_legacy_xls_dates_booleans_and_hidden_rows(tmp_path):

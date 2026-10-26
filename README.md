@@ -2,7 +2,7 @@
 
 <img src="desktop/assets/app.png" width="72" height="72" alt="EasyExcel 图标" />
 
-**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.9.0**，面向 Windows x64。
+**可离线使用的 Excel 与 Python 工作台。** Electron + TypeScript 负责界面，Python 负责 Excel 操作、绘图和数据分析。当前桌面版为 **0.10.0**，面向 Windows x64。
 
 0.8.0 新增统计分析 dashboard：按图表注解选择行、列或区域，支持跨 Sheet 追加和按共同字段关联，由本机 Python 生成 8 类图表、描述统计和离线报告。保留原有 VBA 结构导出与匿名 Python 编程功能。
 
@@ -46,7 +46,7 @@ npm run dev
 npm run dist:portable
 ```
 
-生成 `desktop/release/EasyExcel-Portable-0.9.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
+生成 `desktop/release/EasyExcel-Portable-0.10.0-x64.zip`（版本号随 `desktop/package.json` 更新）。完整解压后双击 `EasyExcel.exe`，不要只复制 EXE。
 
 `npm run dist:win` 可生成安装程序；`npm run build` 只编译界面。详细说明见 [桌面版文档](desktop/README.md)。构建产物和依赖目录不提交到 Git。
 
@@ -62,11 +62,13 @@ npm run dist:portable
 
 更名后继续使用 `%APPDATA%/excelrouter-desktop` 保存脚本库、历史和草稿，兼容旧版备份。换电脑时使用脚本库的“备份 / 导入备份”。
 
+0.10.0 支持 **16:9 自由布局看板**：在 1920 × 1080 画布上拖动、调整图表大小，按窗口等比缩放，保存方案和离线 HTML 均保留布局。
+
 ## 统计分析 dashboard
 
 左侧「统计分析」→ 选择文件/文件夹 → 按图表说明选择 Sheet 和数据区域 →「读取数据并检查字段」→ 选择分类/数值及统计方式 →「生成图表预览」→「加入 dashboard」。支持可视化拖选、整行整列、分页到第 100 行之后、多层表头和按行排布的数据。
 
-多 Sheet 同类明细按字段名追加；不同指标按共同唯一字段一对一关联，重复键会报错，未匹配数会显示。每张图附数据来源、统计方法和清理说明；配置自动保存在本机，也可导出/导入 JSON 方案。看板可导出独立离线 HTML、PNG 与统计 CSV。
+多 Sheet 同类明细按字段名追加；不同指标按共同唯一字段一对一关联，重复键会报错，未匹配数会显示。每张图附数据来源、统计方法和清理说明；配置自动保存在本机，也可导出/导入 JSON 方案。看板可以拖动标题、拖动边框控制点、输入 X/Y/宽/高自由排版，支持吸附、自动排列、层级调整、撤销/重做和大屏预览。导出的离线 HTML 保留 16:9 布局，完整统计注解在下方明细中查看；另存单图 PNG 与统计 CSV。
 
 分析读取完整指定区域，最多 4 个数据块、500,000 个区域单元格、最远第 100,000 行；不重算公式，不把缺失值补成零。报告包含真实统计结果，和给 AI 的脱敏包是两个入口。详细选数方法、各图适用场景与统计口径见 [统计分析指南](docs/统计分析指南.md)。
 
