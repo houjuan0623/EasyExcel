@@ -5,6 +5,7 @@ import type { AnalysisCard, AnalysisResult } from '../shared/analysis';
 import { arrangeLayouts, constrainLayout, transformLayout, type ChartLayout, type ResizeHandle } from '../shared/dashboard-layout';
 import '../shared/dashboard-canvas.css';
 import './dashboard.css';
+import AnalysisProblem from './AnalysisProblem';
 
 type Card = AnalysisCard & { result?: AnalysisResult };
 type Snapshot = { id: string; layout: ChartLayout }[];
@@ -46,7 +47,7 @@ function TileBody({ card, error }: { card: Card; error?: string }) {
       ? result.image ? <img src={result.image} alt={result.title} draggable={false} /> : <div className="dashboard-metric"><strong>{number(result.metric)}</strong><span>{result.unit}</span></div>
       : <div className="analysis-card-pending">刷新图表后显示本机数据</div>}</div>
     {card.config.note && <p className="dashboard-tile-note" title={card.config.note}>{card.config.note}</p>}
-    {error ? <p className="dashboard-tile-status error" title={error}>刷新失败 · 当前为上次结果，请查看详情</p>
+    {error ? <p className="dashboard-tile-status error" title={error}>刷新失败 · {result ? '当前为上次结果，' : ''}请查看详情</p>
       : !!result?.warnings.length && <p className="dashboard-tile-status">{result.warnings.length} 条数据处理说明 · 查看详情</p>}
   </>;
 }
@@ -177,9 +178,9 @@ export default function DashboardCanvas({ title, cards, errors, busy, ready, onC
         <button className="icon-button" aria-label={`删除图表 ${activeIndex + 1}`} disabled={busy} onClick={() => onChange(cards.filter((c) => c.id !== active.id))}><Trash2 size={15} /></button>
       </div>
     </div>}
-    {active && errors[active.id] && <p className="analysis-error">{errors[active.id]}。画布如有图表，是上次成功生成的结果。</p>}
+    {active && errors[active.id] && <AnalysisProblem reason={errors[active.id]} />}
     <p className="dashboard-footnote">布局自动保存。新增图表会放入空位；空间不足时叠放在上层，可使用“自动排列”整理。导出的 HTML 保留此布局和完整统计明细。</p>
     {presenting && <Modal title="16:9 看板预览 · Esc 退出" presentation onClose={() => setPresenting(false)}><FitCanvas>{artboard(false)}</FitCanvas></Modal>}
-    {detail && <Modal title={detail.config.title} onClose={() => setDetailId(null)}><div className="dashboard-detail-content">{errors[detail.id] && <p className="analysis-error">{errors[detail.id]}</p>}{detail.result ? renderDetails(detail.result) : <p>刷新图表后可查看完整数据、来源和统计口径。</p>}</div></Modal>}
+    {detail && <Modal title={detail.config.title} onClose={() => setDetailId(null)}><div className="dashboard-detail-content">{errors[detail.id] && <AnalysisProblem reason={errors[detail.id]} />}{detail.result ? renderDetails(detail.result) : <p>刷新图表后可查看完整数据、来源和统计口径。</p>}</div></Modal>}
   </div>;
 }

@@ -7,8 +7,8 @@ import {
   Merge, Minus, Play, RefreshCw, Search, Settings2, ShieldCheck,
   Sparkles, Square, Table2, Upload, X, AlertCircle, Eye, Zap, Code2, BarChart3,
 } from 'lucide-react';
-import type { GroupPreview, HistoryItem, JobResult, Mode, Preview, SheetChoice, SheetInfo, SourceInfo } from '../shared/types';
-import SheetPreview from './SheetPreview';
+import type { GroupPreview, HistoryItem, JobResult, Mode, SheetChoice, SheetInfo, SourceInfo } from '../shared/types';
+import ExcelSheetPreview from './ExcelSheetPreview';
 import CodeWorkspace from './CodeWorkspace';
 import PrivacyExport from './PrivacyExport';
 import AnalysisWorkspace from './AnalysisWorkspace';
@@ -64,9 +64,6 @@ export default function App() {
   const [source, setSource] = useState<SourceInfo | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeSheet, setActiveSheet] = useState<{ path: string; name: string } | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [previewError, setPreviewError] = useState('');
   const [reading, setReading] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [search, setSearch] = useState('');
@@ -165,16 +162,6 @@ export default function App() {
   useEffect(() => {
     setColumn((old) => columns.includes(old) ? old : columns.find((name) => /部门|区域|网格|班级|门店/.test(name)) || columns[0] || '');
   }, [columns]);
-
-  useEffect(() => {
-    if (!activeSheet || !api || reading) { setPreview(null); return; }
-    let current = true;
-    setPreviewBusy(true); setPreviewError(''); setPreview(null);
-    api.preview(activeSheet.path, activeSheet.name, headerRow).then((data) => { if (current) setPreview(data); })
-      .catch((e) => { if (current) setPreviewError(message(e)); })
-      .finally(() => { if (current) setPreviewBusy(false); });
-    return () => { current = false; };
-  }, [activeSheet, headerRow, reading, refresh]);
 
   useEffect(() => {
     setChosenValues(null); setGroupSearch(''); setGroupError(''); setGroupData(null);
@@ -318,9 +305,9 @@ export default function App() {
 
               <PrivacyExport request={{ inputPath, selection, headerRow }} disabled={locked || engine !== 'ready'} onBusy={setPrivacyBusy} />
               <section className="card preview-card">
-                <CardTitle title="数据预览"><span className="subtle">前 100 行 · 原表样式与图表</span></CardTitle>
-                <div aria-busy={previewBusy}>
-                  {previewBusy ? <div className="preview-placeholder"><LoaderCircle size={23} className="spin" /><span>正在读取工作表样式…</span></div> : previewError ? <div className="preview-placeholder"><AlertCircle size={23} /><span>{previewError}</span></div> : preview ? <SheetPreview key={keyOf(activeSheet!.path, activeSheet!.name)} preview={preview} name={activeSheet!.name} /> : <div className="preview-placeholder"><Columns3 size={28} strokeWidth={1.4} /><span>选择工作表，即可在这里预览数据</span></div>}
+                <CardTitle title="数据预览"><span className="subtle">Excel 原样视图 · 样式 / 图表 / 公式</span></CardTitle>
+                <div aria-busy={reading}>
+                  {reading ? <div className="preview-placeholder"><LoaderCircle size={23} className="spin" /><span>正在读取工作表…</span></div> : activeSheet ? <ExcelSheetPreview key={keyOf(activeSheet.path, activeSheet.name) + refresh + headerRow} inputPath={inputPath} path={activeSheet.path} sheet={activeSheet.name} headerRow={headerRow} /> : <div className="preview-placeholder"><Columns3 size={28} strokeWidth={1.4} /><span>选择工作表，即可在这里预览数据</span></div>}
                 </div><div className="card-footnote"><Eye size={12} />包含原表标题与表头；实际导出以勾选的 Sheet 为准。</div>
               </section>
             </div>

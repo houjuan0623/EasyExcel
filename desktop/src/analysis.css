@@ -133,3 +133,26 @@
 .analysis-loading { display: flex; gap: 8px; justify-content: center; padding: 40px; color: #8ba192; }
 @media(max-width:1150px) { .analysis-builder-grid { grid-template-columns: 1fr; }.analysis-chart-setup { border-left: 0; border-top: 1px solid #e5ece7; padding: 20px 0 0; }.analysis-board-heading { flex-direction: column; align-items: stretch; }.analysis-board-actions { max-width: none; justify-content: flex-start; }.analysis-card-grid { grid-template-columns: 1fr; } }
 @media(max-width:850px) { .analysis-templates { grid-template-columns: repeat(2,minmax(0,1fr)); }.analysis-source-bar { flex-wrap: wrap; }.analysis-source-bar > div { flex-basis: 100%; } }
+
+/* 图表说明与可选规则 */
+.analysis-workflow-hint { color: #54846a; background: #f0f7f2; padding: 13px 16px; border-radius: 8px; font-size: 12px; line-height: 1.8; }
+.chart-guide { background: #f4f8f2; border: 1px solid #dce9dc; border-radius: 10px; padding: 14px 16px; margin: 16px 0 22px; color: #536e59; font-size: 12px; line-height: 1.8; }
+.chart-guide > summary { cursor: pointer; color: #335f43; font-weight: 600; }
+.chart-guide-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 24px; }
+.chart-guide h4 { margin: 14px 0 4px; color: #42634d; font-size: 12px; }.chart-guide p { margin: 6px 0; }.chart-guide li { margin: 5px 0; }.chart-guide ol, .chart-guide ul { padding-left: 20px; margin: 5px 0; }.chart-guide-caution { color: #8a7a55; }
+.analysis-problem p { margin: 6px 0; }.analysis-problem ol { margin: 4px 0; padding-left: 20px; }
+.analysis-generation-checklist { background: #f2f6f8; color: #637d8a; padding: 11px 14px; border-radius: 7px; font-size: 11px; line-height: 1.8; }.analysis-generation-checklist ul { margin: 3px 0; padding-left: 17px; }
+.analysis-rules-editor { margin-top: 13px; border-top: 1px solid #dfe8e2; padding-top: 12px; font-size: 11px; color: #607f6c; line-height: 1.7; }.analysis-rules-editor > summary { cursor: pointer; color: #347752; font-weight: 600; }.analysis-rules-editor > p { font-size: 11px; margin: 9px 0; }
+.analysis-rule { margin: 14px 0; border: 1px solid #d5e3d9; border-radius: 8px; padding: 10px 12px; min-width: 0; background: white; }.analysis-rule legend { padding: 0 6px; color: #3e7757; }.analysis-rule.rule-off { opacity: .65; background: #f5f6f5; }
+.analysis-rule-heading { display: flex; align-items: center; gap: 5px; margin-bottom: 10px; }.analysis-rule-heading > span { flex: 1; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.analysis-workspace .analysis-rule-heading label, .analysis-workspace .analysis-rule-options > label:first-child { flex-direction: row !important; align-items: center; margin: 0 !important; }.analysis-rule-options { display: flex; flex-direction: column; gap: 10px; }.analysis-rule small { display: block; line-height: 1.7; color: #8a9c91; margin-top: 8px; }.analysis-rules-count { margin-left: 10px; color: #879c8e; }
+.analysis-rule-audit { padding: 12px; margin: 12px 0; background: #f0f6f9; border-radius: 8px; color: #5a7c8a; font-size: 11px; line-height: 1.7; }.analysis-rule-audit summary { cursor: pointer; font-weight: 600; }.analysis-rule-audit section { border-top: 1px solid #dce8ed; padding-top: 9px; margin-top: 10px; }.analysis-rule-audit p { margin: 5px 0; }.analysis-rule-audit .analysis-table-scroll { max-height: 180px; }
+@media(max-width:1000px) { .chart-guide-grid { grid-template-columns: 1fr; } }
+
+/* 拆分、汇总和分析共用的 Excel 视图 */
+.analysis-picker.workbook-inline { display: flex; flex-direction: column; width: 100%; height: 560px; max-height: none; border: 0; border-radius: 0; background: white; }
+.workbook-inline > header { padding: 12px 16px; }.workbook-inline > header strong { font-size: 12px; }.workbook-inline > header p { line-height: 1.7; }
+.workbook-inline .analysis-picker-tools { padding: 10px 14px; gap: 8px; }.workbook-inline .analysis-picker-tools input { width: 58px !important; }.workbook-inline .native-formula-bar { padding: 7px 14px; }
+.excel-preview-mode { padding: 12px 16px 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.excel-preview-mode label { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #6a8876; }.excel-preview-mode select { padding: 6px 8px; border: 1px solid #d6e2da; border-radius: 5px; background: white; color: #466b55; font-size: 11px; }
+.excel-preview-tip { margin: 0; padding: 0 16px 10px; color: #8b9e91; font-size: 10px; line-height: 1.7; }

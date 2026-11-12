@@ -314,6 +314,9 @@ def read_block(reader, spec):
                     is_header = r < top + header if orientation == "columns" else col < left + header
                     if is_header:
                         rows[r - top][col - left] = rows[b - top][a - left]
+    from desktop.analysis_rules import apply_rules
+
+    rule_audit, rule_warnings = apply_rules(rows, spec, bounds, meta, header, numeric, plain)
     included_rows = [
         r for r in range(top, bottom + 1) if spec.get("includeHidden") is True or r not in meta["hiddenRows"]
     ]
@@ -373,7 +376,7 @@ def read_block(reader, spec):
         hiddenRows=bottom - top + 1 - len(included_rows),
         hiddenColumns=right - left + 1 - len(included_cols),
     )
-    warnings = []
+    warnings = list(rule_warnings)
     if audit["missingFormulaCaches"]:
         warnings.append(
             f"{name}：{audit['missingFormulaCaches']} 个公式缺少已保存结果，按缺失值处理；可在 Excel 重算并保存后刷新"
@@ -393,6 +396,7 @@ def read_block(reader, spec):
         "sample": [[plain(v) for v in row] for row in frame.head(6).values.tolist()],
         "audit": audit,
         "warnings": warnings,
+        "ruleAudit": rule_audit,
     }
 
 
@@ -575,8 +579,9 @@ def render(request):
         raise ValueError("单位或注解过长")
     selected_fields = [next(f for f in fields if f["id"] == c) for c in y]
     numeric_frame = frame[y].apply(lambda col: col.map(numeric)).astype(float)
-    if any(numeric_frame[c].notna().sum() == 0 for c in y):
-        raise ValueError("某个数值字段没有有效数字；请检查表头、选区或公式缓存")
+    invalid_fields = [names[c] for c in y if numeric_frame[c].notna().sum() == 0]
+    if invalid_fields:
+        raise ValueError(f"字段「{'、'.join(invalid_fields)}」没有有效数字（共 {len(frame)} 条记录）；请检查选区、处理规则和公式缓存")
     statistics = summary(frame, selected_fields)
     invalid = sum(row[3] for row in statistics["rows"])
     if invalid:
@@ -723,7 +728,7 @@ def render(request):
         elif kind == "scatter":
             pairs = pd.DataFrame({"x": frame[x].map(numeric), "y": numeric_frame[y[0]]}).dropna()
             if len(pairs) < 2:
-                raise ValueError("散点图至少需要 2 条 X、Y 均有效的配对记录")
+                raise ValueError(f"散点图至少需要 2 条 X、Y 均有效的配对记录，当前只有 {len(pairs)} 条；请检查「{names[x]}」和「{names[y[0]]}」是否在相同行有数字")
             points = pairs.iloc[np.linspace(0, len(pairs) - 1, min(5000, len(pairs)), dtype=int)]
             ax.scatter(points.x, points.y, s=18, color=COLORS[0], alpha=0.65)
             ax.set_xlabel(names[x])
@@ -756,6 +761,8 @@ def render(request):
             method = "每个字段单独计算：箱体为第 25%～75% 分位数，中线为中位数，须延伸到 1.5×四分位距内最远观测；外侧点为候选异常值，不自动删除。"
         else:
             corr = numeric_frame.corr(method="pearson", min_periods=3)
+            if not any(pd.notna(corr.iloc[i, j]) for i in range(len(y)) for j in range(i + 1, len(y))):
+                warnings.append("本图没有可比较的字段间相关系数：字段可能为常量或每对有效数字不足 3 条；请查看下方有效配对数，调整选区或字段后重试")
             valid = numeric_frame.notna().astype(int)
             pairs = valid.T.dot(valid)
             plot = ax.imshow(np.ma.masked_invalid(corr.values), vmin=-1, vmax=1, cmap="BrBG")
@@ -806,6 +813,8 @@ def render(request):
         "table": table,
         "counts": counts,
         "warnings": warnings,
+        "ruleAudit": [{"name": s["name"], "sheet": s["sheet"], "rules": b["ruleAudit"]}
+                      for s, b in zip(request["blocks"], schema["blocks"], strict=True) if b["ruleAudit"]],
         "sources": [
             {
                 "name": s["name"],

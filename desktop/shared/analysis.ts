@@ -1,14 +1,16 @@
 // Copyright (c) 2026 AbeLin · MIT License
 import { arrangeLayouts, DASHBOARD_CANVAS, validLayout, type ChartLayout } from './dashboard-layout';
+import { parseRules, type AnalysisRule, type RuleAudit } from './analysis-rules';
 export type ChartKind = 'metric' | 'bar' | 'line' | 'pie' | 'histogram' | 'scatter' | 'box' | 'correlation';
 export interface AnalysisBlock {
   id: string; name: string; path: string; sheet: string; range: string; headerRows: number;
   orientation: 'columns' | 'rows'; includeHidden: boolean; skipTotals: boolean;
+  rules?: AnalysisRule[];
 }
 export interface AnalysisField { id: string; name: string; location: string; kind: 'number' | 'date' | 'mixed' | 'text' }
 export interface AnalysisSchema {
   token: string; blocks: { id: string; name: string; fields: AnalysisField[]; rows: number; resolvedRange: string;
-    sample: (string | number | boolean | null)[][]; audit: Record<string, number>; warnings: string[] }[];
+    sample: (string | number | boolean | null)[][]; audit: Record<string, number>; warnings: string[]; ruleAudit?: RuleAudit[] }[];
 }
 export interface AnalysisRequest {
   inputPath: string; blocks: AnalysisBlock[]; token: string; kind: ChartKind; title: string; unit: string; note: string;
@@ -23,6 +25,7 @@ export interface AnalysisResult {
   statistics: AnalysisTable; table: AnalysisTable; counts: Record<string, number>; warnings: string[];
   sources: { name: string; file: string; sheet: string; range: string; rows: number; headerRows: number; orientation: string }[];
   generatedAt: string; token: string;
+  ruleAudit?: { name: string; sheet: string; rules: RuleAudit[] }[];
 }
 export interface AnalysisGrid {
   startRow: number; startColumn: number; totalRows: number; totalColumns: number;
@@ -61,7 +64,8 @@ export function parseAnalysisPlan(value: unknown): AnalysisPlan {
       const x = obj(b);
       const id = identifier(x.id);
       return { id, name: str(x.name, 80), path: str(x.path, 3000), sheet: str(x.sheet, 80), range: str(x.range, 80),
-        headerRows: num(x.headerRows, 0, 10), orientation: choice(x.orientation, ['columns', 'rows']), includeHidden: x.includeHidden === true, skipTotals: x.skipTotals !== false };
+        headerRows: num(x.headerRows, 0, 10), orientation: choice(x.orientation, ['columns', 'rows']), includeHidden: x.includeHidden === true, skipTotals: x.skipTotals !== false,
+        ...(x.rules !== undefined ? { rules: parseRules(x.rules) } : {}) };
     });
     if (new Set(blocks.map((b: AnalysisBlock) => b.id)).size !== blocks.length) throw new Error('数据块标识重复');
     return { id: identifier(card.id), layout: { x: layout.x, y: layout.y, width: layout.width, height: layout.height }, config: { inputPath: str(c.inputPath, 3000), blocks, token: str(c.token, 100),

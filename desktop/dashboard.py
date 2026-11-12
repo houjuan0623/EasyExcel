@@ -1,5 +1,6 @@
 # Copyright (c) 2026 AbeLin · MIT License
 """固定 16:9 看板的布局校验和离线 HTML；不改变分析数据。"""
+import json
 import re
 from html import escape
 from pathlib import Path
@@ -44,6 +45,7 @@ def dashboard_cards(request):
 def dashboard_html(title, cards, results, html_table):
     """SVG viewBox 统一缩放字体和图表；无 JavaScript、网络请求或外部资源。"""
     tiles, details = [], []
+    guides = json.loads((Path(__file__).parent / "shared" / "chart-guides.json").read_text(encoding="utf-8"))
     for index, (card, result) in enumerate(zip(cards, results, strict=True), 1):
         layout = card["layout"]
         style = (f"left:{layout['x']}px;top:{layout['y']}px;width:{layout['width']}px;"
@@ -60,10 +62,24 @@ def dashboard_html(title, cards, results, html_table):
                      f'<div class="dashboard-tile-body">{visual}</div>{note}{warning}</article>')
         source = "；".join(f"{s['file']} / {s['sheet']}!{s['range']}（{s['rows']} 条记录）" for s in result["sources"])
         warnings = "".join("<li>" + escape(w) + "</li>" for w in result["warnings"])
+        guide = guides[result["kind"]]
+        guidance = ("<details><summary>这张图什么时候用、怎么使用</summary><h3>适用场景</h3><p>"
+                    + escape(guide["useWhen"]) + "</p><p>" + escape(guide["avoidWhen"])
+                    + "</p><h3>选择与生成步骤</h3><ol>" + "".join("<li>" + escape(s) + "</li>" for s in guide["steps"])
+                    + "</ol><p>例如：" + escape(guide["example"]) + "</p><h3>计算与读图</h3><p>"
+                    + escape(guide["method"]) + "</p><p>" + escape(guide["reading"])
+                    + "</p><h3>常见问题</h3><ul>" + "".join("<li>" + escape(s) + "</li>" for s in guide["fixes"]) + "</ul></details>")
+        rule_details = []
+        for block in result.get("ruleAudit", []):
+            for rule in block["rules"]:
+                rule_details.append("<h4>" + escape(f"{block['name']} / {block['sheet']} · 规则 {rule['rule']} · {rule['target']} · {rule['description']}")
+                                    + f"</h4><p>匹配 {rule['matched']} 格，改变 {rule['changed']} 格，保持原样 {rule['skipped']} 格。</p>"
+                                    + html_table({"columns": ["单元格", "处理前", "处理后"],
+                                                  "rows": [[e["cell"], e["before"], e["after"]] for e in rule["examples"]]}))
         details.append(f'<section id="chart-{index}" class="report-detail"><h2>{index}. {escape(result["title"])}</h2>'
                        f'<p>{escape(result["method"])}</p><p class="note">{escape(result["note"])}</p>'
-                       f'<p class="source">{escape(source)}</p><ul>{warnings}</ul>'
-                       '<details><summary>图表数据与描述统计</summary>' + html_table(result["table"])
+                       f'<p class="source">{escape(source)}</p><ul>{warnings}</ul>' + guidance + "".join(rule_details)
+                       + '<details><summary>图表数据与描述统计</summary>' + html_table(result["table"])
                        + html_table(result["statistics"]) + '</details></section>')
     css = (Path(__file__).parent / "shared" / "dashboard-canvas.css").read_text(encoding="utf-8")
     return ("""<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>"""
